@@ -196,11 +196,12 @@ export function SoundBuilderView({
               <Icon name="activity" size={30} />
             </div>
             <h2>Make your first sound mod</h2>
-            <p>
-              Give it a name on the left, pick the game sounds to replace, and choose your files. MP3, WAV, MP4, M4A,
-              OGG and FLAC all work. The app matches each one to the original's volume, compiles it with CSDK and adds
-              it to your library.
-            </p>
+            <ol className="steps">
+              <li>Name it in <strong>New sound mod</strong> on the left and click <strong>Create</strong>.</li>
+              <li>Click <strong>Add game sound</strong> and pick the sounds to replace (Seven is <code>gigawatt</code>).</li>
+              <li>Choose your file for each one: MP3, WAV, MP4, M4A, OGG or FLAC. You can also drop files on the window.</li>
+              <li>Click <strong>Build mod</strong>. Volume is matched to the originals and the mod lands in your library.</li>
+            </ol>
           </div>
         )}
       </section>
@@ -240,7 +241,13 @@ function ProjectEditor({
       const empty = p.items.filter((i) => !i.source);
       if (!audio.length) return;
       if (!empty.length) {
-        void act(() => Promise.reject("Add a game sound first, then drop your file to fill it."));
+        void act(() =>
+          Promise.reject(
+            p.items.length
+              ? "Every sound already has a file. Use Change on a row to swap it, or Add game sound for a new one."
+              : "Add the game sound your file replaces first (Add game sound), then drop it again.",
+          ),
+        );
         return;
       }
       void act(async () => {

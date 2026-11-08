@@ -73,12 +73,18 @@ export default function App() {
     async (paths: string[]) => {
       const vpks = paths.filter((p) => p.toLowerCase().endsWith(".vpk"));
       const audio = paths.filter((p) => AUDIO_EXTS.includes(p.split(".").pop()?.toLowerCase() ?? ""));
-      if (audio.length && viewRef.current === "sounds" && soundDrop.current) {
-        soundDrop.current(audio);
+      if (audio.length && viewRef.current === "sounds") {
+        if (soundDrop.current) soundDrop.current(audio);
+        else toast("info", "Create a sound mod on the left first, then add the game sound your file replaces.");
         if (!vpks.length) return;
       }
       if (vpks.length === 0) {
-        toast("error", audio.length ? "Open Sound Builder to use audio files" : "Only .vpk and audio files can be dropped here");
+        toast(
+          "info",
+          audio.length
+            ? "Audio files go in Sound Builder: open it, pick the game sound to replace, then drop your file."
+            : "Only .vpk and audio files can be dropped here",
+        );
         return;
       }
       await act(async () => {
