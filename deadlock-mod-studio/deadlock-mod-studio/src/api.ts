@@ -1,0 +1,42 @@
+import { invoke } from "@tauri-apps/api/core";
+import type { ApplyReport, ModMeta, Overview, Profile, SafeModeEvent } from "./types";
+import { mockApi } from "./mock";
+
+/** False when the UI is opened in a plain browser (`npm run dev`) for design work. */
+export const isTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
+
+// One typed wrapper per Tauri command in src-tauri/src/lib.rs.
+const tauriApi = {
+  overview: () => invoke<Overview>("get_overview"),
+  checkForUpdate: () => invoke<SafeModeEvent | null>("check_for_update"),
+  dismissSafeMode: () => invoke<void>("dismiss_safe_mode"),
+  detectGameDir: () => invoke<string | null>("detect_game_dir"),
+  setGameDir: (path: string) => invoke<void>("set_game_dir", { path }),
+  importMods: (paths: string[]) => invoke<string[]>("import_mods", { paths }),
+  replaceModFile: (id: string, path: string) => invoke<void>("replace_mod_file", { id, path }),
+  updateMod: (id: string, meta: ModMeta) => invoke<void>("update_mod", { id, meta }),
+  removeMod: (id: string) => invoke<void>("remove_mod", { id }),
+  setEnabled: (id: string, enabled: boolean) => invoke<void>("set_enabled", { id, enabled }),
+  setAllEnabled: (enabled: boolean) => invoke<void>("set_all_enabled", { enabled }),
+  reorder: (ids: string[]) => invoke<void>("reorder", { ids }),
+  markVerified: (id: string, verified: boolean) => invoke<void>("mark_verified", { id, verified }),
+  saveProfile: (name: string) => invoke<Profile>("save_profile", { name }),
+  deleteProfile: (id: string) => invoke<void>("delete_profile", { id }),
+  applyProfile: (id: string) => invoke<void>("apply_profile", { id }),
+  applyChanges: () => invoke<ApplyReport>("apply_changes"),
+  restoreVanilla: () => invoke<ApplyReport>("restore_vanilla"),
+  readLog: (lines: number) => invoke<string[]>("read_log", { lines }),
+  openFolder: (which: "library" | "backups" | "logs" | "addons" | "game") =>
+    invoke<void>("open_folder", { which }),
+  launchGame: () => invoke<void>("launch_game"),
+};
+
+export type Api = typeof tauriApi;
+
+export const api: Api = isTauri ? tauriApi : mockApi;
+
+export function errorText(e: unknown): string {
+  if (typeof e === "string") return e;
+  if (e instanceof Error) return e.message;
+  return String(e);
+}

@@ -1,0 +1,94 @@
+# Deadlock Mod Studio (Phase 1)
+
+A personal Windows app for managing my own Deadlock mods: a library of VPKs kept
+outside the game, on/off toggles, load order, profiles, safe mode on game
+updates, and safe edits to `gameinfo.gi`.
+
+It follows the ground rules in the planning doc:
+
+- Only the `SearchPaths` block of `gameinfo.gi` is ever edited, and only to add
+  or remove one line: `Game citadel/addons`. ConVars are never touched.
+- `gameinfo.gi` is backed up before every edit (the newest 10 are kept).
+- Only files the app placed in `addons` are ever removed. Anything you put there
+  yourself is left alone, and the app refuses to overwrite it.
+- Nothing changes while Deadlock is running.
+- Nothing in the game folder changes until you press **Review & apply**, which
+  shows every file operation first.
+
+## Build it on Windows
+
+One-time setup (about 15 minutes):
+
+1. **Microsoft C++ Build Tools**: install from
+   <https://visualstudio.microsoft.com/visual-cpp-build-tools/> and tick
+   **Desktop development with C++**.
+2. **Rust**: install from <https://rustup.rs> (accept the defaults).
+3. **Node.js LTS**: install from <https://nodejs.org>.
+4. WebView2 is already part of Windows 10 and 11.
+
+Then, in a terminal inside this folder (for example `D:\Modding\deadlock-mod-studio`):
+
+```
+npm install
+npm run tauri dev      # run the app in development mode
+npm run tauri build    # make an installer
+```
+
+The first build compiles a lot of Rust and takes several minutes. Later builds
+are quick. The installer ends up in:
+
+```
+src-tauri\target\release\bundle\nsis\Deadlock Mod Studio_0.1.0_x64-setup.exe
+```
+
+## First test (please do this before real use)
+
+1. Close Deadlock. Open the app and check **Settings** shows
+   `D:\Games\SteamLibrary\steamapps\common\Deadlock` as **Found**.
+2. Import one small VPK (drag it onto the window or use **Import VPK**).
+3. Turn it on, press **Review & apply**, read the list, then apply.
+4. Check `game\citadel\addons\pak01_dir.vpk` exists and `gameinfo.gi` has the new
+   `Game citadel/addons` line. A backup should be in **Activity → gameinfo backups**.
+5. Launch Deadlock and check the mod works. Then mark it **Works on this build**.
+6. Close the game, go to **Settings → Restore vanilla**. The addons copy should be
+   gone and `gameinfo.gi` back exactly as Valve shipped it.
+
+**Load order is still to confirm.** The top of the list becomes `pak01_dir.vpk`.
+Which number wins when two mods change the same file hasn't been tested yet:
+enable two mods that share a file (the app flags these) and see which one plays.
+
+## How safe mode works
+
+On start, every 60 seconds, and whenever the window gets focus, the app reads
+Deadlock's build ID from Steam (`steamapps\appmanifest_1422450.acf`). When it
+changes, every mod is switched off and the app's files are removed from `addons`
+(straight away if the game is closed, otherwise as soon as you apply). A banner
+lists what was switched off. Mods marked verified on the old build show
+**Needs testing**.
+
+## Where things are kept
+
+`%APPDATA%\app.deadlockmodstudio.local\`
+
+| Path | What |
+| --- | --- |
+| `library.json` | Mods, order, profiles, settings (`library.json.bak` is the previous save) |
+| `library\` | The stored VPKs |
+| `backups\` | `gameinfo.gi` backups |
+| `logs\actions.log` | Every file the app moved, renamed or edited |
+
+## Project layout
+
+| Folder | What |
+| --- | --- |
+| `src-tauri/modcore/` | All file logic (gameinfo.gi, VPK reading, library, sync, Steam). No UI code, fully unit tested |
+| `src-tauri/src/lib.rs` | Tauri commands, the game-running check, startup |
+| `src/` | React + TypeScript interface |
+| `src/mock.ts` | Fake backend so `npm run dev` works in a normal browser for design work |
+
+Run the tests with:
+
+```
+cd src-tauri
+cargo test -p modcore
+```

@@ -1,0 +1,15 @@
+[package]
+name = "modcore"
+version = "0.1.0"
+edition = "2021"
+description = "File logic for Deadlock Mod Studio: gameinfo.gi, VPKs, library and sync"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+uuid = { version = "1", features = ["v4"] }
+
+[dev-dependencies]
+tempfile = "3"
