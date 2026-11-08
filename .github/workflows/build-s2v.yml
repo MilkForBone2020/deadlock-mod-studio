@@ -47,6 +47,7 @@ jobs:
         run: |
           mkdir out
           for rt in win-x64 linux-x64; do
+            rm -f vrf/CLI/bin/Release/$rt/publish/*.pdb
             cp vrf/LICENSE vrf/CLI/bin/Release/$rt/publish/LICENSE.txt
             (cd vrf/CLI/bin/Release/$rt/publish && zip -q -r -X "$GITHUB_WORKSPACE/out/s2v-cli-$rt.zip" .)
           done
