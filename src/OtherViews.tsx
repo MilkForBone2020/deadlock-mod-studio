@@ -3,6 +3,7 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { api } from "./api";
 import type { Overview } from "./types";
 import { Icon } from "./ui";
+import type { Updater } from "./updater";
 
 type Act = (fn: () => Promise<unknown>, ok?: string) => Promise<boolean>;
 
@@ -122,7 +123,7 @@ export function ActivityView({ act, refreshKey }: { act: Act; refreshKey: number
   );
 }
 
-export function SettingsView({ ov, act }: { ov: Overview; act: Act }) {
+export function SettingsView({ ov, act, updater }: { ov: Overview; act: Act; updater: Updater }) {
   const [dir, setDir] = useState(ov.settings.gameDir ?? "");
   const [confirmVanilla, setConfirmVanilla] = useState(false);
   useEffect(() => setDir(ov.settings.gameDir ?? ""), [ov.settings.gameDir]);
@@ -174,6 +175,38 @@ export function SettingsView({ ov, act }: { ov: Overview; act: Act }) {
           <button className="btn ghost" onClick={() => act(() => api.openFolder("library"))}>
             <Icon name="folder" /> Open mod library
           </button>
+        </div>
+      </section>
+
+      <section className="card">
+        <h2>App updates</h2>
+        <p className="hint">
+          The app checks for a new version when it opens and every few hours, and offers to install it. Updates are
+          signed, and anything not signed by this project is refused.
+        </p>
+        <dl className="facts-grid">
+          <dt>This version</dt>
+          <dd>{updater.current ? `v${updater.current}` : "—"}</dd>
+          <dt>Status</dt>
+          <dd>
+            {updater.status === "checking" && "Checking…"}
+            {updater.status === "none" && "Up to date"}
+            {updater.status === "available" && `v${updater.latest} is available`}
+            {updater.status === "downloading" && `Installing v${updater.latest}…`}
+            {updater.status === "error" && `Couldn't check: ${updater.error}`}
+            {updater.status === "idle" && (updater.lastChecked ? "Couldn't reach GitHub last time" : "Not checked yet")}
+          </dd>
+        </dl>
+        <div className="row-actions">
+          {updater.status === "available" ? (
+            <button className="btn primary" onClick={() => void updater.install()}>
+              Install v{updater.latest} and restart
+            </button>
+          ) : (
+            <button className="btn ghost" disabled={updater.status === "checking" || updater.status === "downloading"} onClick={() => void updater.check()}>
+              Check for updates
+            </button>
+          )}
         </div>
       </section>
 

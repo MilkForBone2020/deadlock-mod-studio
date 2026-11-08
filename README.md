@@ -19,7 +19,17 @@ It follows the ground rules in the planning doc:
 - Nothing in the game folder changes until you press **Review & apply**, which
   shows every file operation first.
 
-## Build it on Windows
+## Updates
+
+Every push to `main` builds the app on GitHub, signs it and publishes a
+[Release](../../releases). The installed app checks the latest release when it
+opens (and every 6 hours) and offers **Install and restart**. Updates are signed
+with a private key kept in this repo's Actions secrets
+(`TAURI_SIGNING_PRIVATE_KEY`, `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`); the app
+refuses anything not signed with it. Keep a backup of that key: without it, new
+versions can't be signed and you'd have to reinstall by hand.
+
+## Build it on Windows yourself (optional)
 
 One-time setup (about 15 minutes):
 

@@ -6,6 +6,7 @@ import type { Action, Overview } from "./types";
 import { LibraryView } from "./LibraryView";
 import { ActivityView, ProfilesView, SettingsView } from "./OtherViews";
 import { Icon, Modal, Toasts, type Toast } from "./ui";
+import { useUpdater, type Updater } from "./updater";
 
 type View = "library" | "profiles" | "activity" | "settings";
 
@@ -27,6 +28,7 @@ export default function App() {
   const [dropping, setDropping] = useState(false);
   const [logKey, setLogKey] = useState(0);
   const toastId = useRef(0);
+  const updater = useUpdater();
 
   const toast = useCallback((kind: Toast["kind"], text: string) => {
     setToasts((t) => [...t.slice(-3), { id: ++toastId.current, kind, text }]);
@@ -193,6 +195,7 @@ export default function App() {
       </aside>
 
       <main className="content">
+        <UpdateBanner u={updater} />
         {ov.safeMode && (
           <div className="banner safe" role="status">
             <Icon name="shield" size={20} />
@@ -233,7 +236,7 @@ export default function App() {
           )}
           {view === "profiles" && <ProfilesView ov={ov} act={act} />}
           {view === "activity" && <ActivityView act={act} refreshKey={logKey} />}
-          {view === "settings" && <SettingsView ov={ov} act={act} />}
+          {view === "settings" && <SettingsView ov={ov} act={act} updater={updater} />}
         </div>
 
         {(pending > 0 || ov.plan.blockers.length > 0) && ov.game.found && (
@@ -280,6 +283,37 @@ export default function App() {
         </div>
       )}
       <Toasts items={toasts} dismiss={dismiss} />
+    </div>
+  );
+}
+
+function UpdateBanner({ u }: { u: Updater }) {
+  if (u.status !== "available" && u.status !== "downloading" && !(u.status === "error" && u.latest)) return null;
+  return (
+    <div className="banner update" role="status">
+      <Icon name="down" size={20} />
+      <div>
+        <strong>
+          {u.status === "downloading" ? `Installing v${u.latest}…` : `Update available: v${u.latest}`}
+        </strong>
+        <p>
+          {u.status === "error"
+            ? `The update didn't install: ${u.error}`
+            : u.status === "downloading"
+              ? "The app will reopen by itself when it's done. Your library and settings are kept."
+              : `You're on v${u.current}. Installing takes a few seconds and the app reopens itself.`}
+        </p>
+        {u.status === "downloading" && (
+          <div className="progress" aria-label="Download progress">
+            <span style={{ width: `${Math.round((u.progress ?? 0.05) * 100)}%` }} />
+          </div>
+        )}
+      </div>
+      {u.status !== "downloading" && (
+        <button className="btn primary small" onClick={() => void u.install()}>
+          Install and restart
+        </button>
+      )}
     </div>
   );
 }

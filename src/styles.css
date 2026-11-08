@@ -261,6 +261,10 @@ textarea { resize: vertical; }
 .banner.safe strong { color: var(--text); }
 .banner.warn { border-color: rgba(227, 172, 82, 0.45); background: rgba(227, 172, 82, 0.08); color: var(--amber); }
 .banner.warn strong { color: var(--text); }
+.banner.update { border-color: rgba(214, 182, 112, 0.5); background: var(--gold-dim); color: var(--gold); }
+.banner.update strong { color: var(--text); }
+.progress { height: 4px; background: var(--line); border-radius: 2px; margin-top: 8px; overflow: hidden; max-width: 360px; }
+.progress span { display: block; height: 100%; background: var(--gold); transition: width 0.2s; }
 
 .apply-bar {
   flex: none; margin: 0 20px 16px;
