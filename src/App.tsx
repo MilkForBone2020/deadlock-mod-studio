@@ -162,8 +162,15 @@ export default function App() {
   }
 
   const pending = ov.plan.actions.length;
+  // Only when my files are already in place but the line has gone (Steam
+  // update, verify, or another manager rewriting gameinfo.gi); not before
+  // the first apply.
   const gameinfoReset =
-    ov.game.found && ov.game.addonsLine === false && ov.mods.some((m) => m.enabled) && !ov.safeMode;
+    ov.game.found &&
+    ov.game.addonsLine === false &&
+    !ov.safeMode &&
+    ov.plan.actions.length > 0 &&
+    ov.plan.actions.every((a) => a.kind === "addSearchPath");
 
   return (
     <div className={`shell ${busy ? "busy" : ""}`}>

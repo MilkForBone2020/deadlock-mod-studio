@@ -473,7 +473,12 @@ async fn build_sound_project(app_handle: tauri::AppHandle, app: State<'_, App>, 
             .clone()
             .ok_or("Set the CSDK folder in Settings first")?;
         let g = require_game_dir(&lib)?;
-        let out = lib.root.join("builds").join(format!("{}.vpk", p.id));
+        let safe: String = p
+            .name
+            .chars()
+            .map(|c| if c.is_ascii_alphanumeric() || c == '-' { c } else { '_' })
+            .collect();
+        let out = lib.root.join("builds").join(format!("{}_{}.vpk", safe.trim_matches('_'), &p.id[..4]));
         (p, PathBuf::from(c), g, out)
     };
     if !steam_running() {
