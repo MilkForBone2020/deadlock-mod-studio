@@ -4,6 +4,7 @@
 //! data so it can be unit tested without Tauri or a real Deadlock install.
 
 pub mod audio;
+pub mod blender;
 pub mod catalog;
 pub mod csdk;
 pub mod gameinfo;

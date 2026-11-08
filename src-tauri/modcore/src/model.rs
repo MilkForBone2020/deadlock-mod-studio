@@ -394,6 +394,108 @@ pub fn use_backup_animations(doc: &mut kv3text::Doc, model: &str) -> Result<()> 
     Ok(())
 }
 
+/// One mesh part of a hero (`outer_costume`, `gun`...), its lower detail
+/// versions, and the body-group choices that show it.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct Part {
+    pub name: String,
+    pub lods: Vec<String>,
+    /// e.g. `["DEFAULT: BASE", "DEFAULT: NO_GUN"]`
+    pub shown_in: Vec<String>,
+}
+
+/// Parts and body groups from a decompiled model source.
+pub fn parts(doc: &kv3text::Doc) -> Vec<Part> {
+    let kids = root_children(&doc.root).cloned().unwrap_or_default();
+    let mut names: Vec<String> = vec![];
+    for list in kids.iter().filter(|k| k.class().as_deref() == Some("RenderMeshList")) {
+        let mut all = vec![];
+        list.walk(&mut all);
+        for n in all {
+            if n.class().as_deref() == Some("RenderMeshFile") {
+                if let Some(name) = n.get("name").and_then(|v| v.as_str()) {
+                    names.push(name);
+                }
+            }
+        }
+    }
+    let is_lod = |n: &str| n.rsplit_once("_lod").is_some_and(|(_, d)| !d.is_empty() && d.chars().all(|c| c.is_ascii_digit()));
+    let mut out: Vec<Part> = names
+        .iter()
+        .filter(|n| !is_lod(n))
+        .map(|n| Part {
+            name: n.clone(),
+            lods: names.iter().filter(|m| is_lod(m) && m.rsplit_once("_lod").map(|(b, _)| b) == Some(n.as_str())).cloned().collect(),
+            shown_in: vec![],
+        })
+        .collect();
+    for list in kids.iter().filter(|k| k.class().as_deref() == Some("BodyGroupList")) {
+        for group in list.children().map(|v| v.as_slice()).unwrap_or(&[]) {
+            let gname = group.get("name").and_then(|v| v.as_str()).unwrap_or_default();
+            for choice in group.children().map(|v| v.as_slice()).unwrap_or(&[]) {
+                let cname = choice.get("name").and_then(|v| v.as_str()).unwrap_or_default();
+                for m in choice.get("meshes").and_then(|v| v.as_array()).map(|v| v.as_slice()).unwrap_or(&[]) {
+                    if let Some(p) = m.as_str().and_then(|m| out.iter_mut().find(|p| p.name == m)) {
+                        p.shown_in.push(format!("{gname}: {cname}"));
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
+/// What the Blender add-on reads to open a project (`dms_project.json`).
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct BlenderProject {
+    pub format: u32,
+    pub id: String,
+    pub name: String,
+    pub hero: String,
+    pub hero_name: String,
+    pub model: String,
+    /// The model's file name without folders or extension, e.g. `gigawatt_prisoner`.
+    pub model_name: String,
+    pub glb: String,
+    pub return_dir: String,
+    pub work_blend: String,
+    pub parts: Vec<Part>,
+    pub body_groups: Vec<String>,
+    pub attachments: Vec<String>,
+    pub bones: Vec<String>,
+}
+
+pub const PROJECT_FILE: &str = "dms_project.json";
+
+/// Write `dms_project.json` for the Blender add-on from an extracted project.
+pub fn write_blender_project(project_dir: &Path, id: &str, name: &str, hero: &str, hero_name: &str, model: &str) -> Result<PathBuf> {
+    let (dir, mname) = split_model(model)?;
+    let template = native(&project_dir.join("original"), &format!("{dir}/{mname}.vmdl"));
+    let doc = kv3text::parse(&std::fs::read_to_string(&template).at(&template)?)?;
+    let summary: ModelSummary = serde_json::from_slice(&std::fs::read(project_dir.join("summary.json")).at(project_dir)?)?;
+    let bp = BlenderProject {
+        format: 1,
+        id: id.to_string(),
+        name: name.to_string(),
+        hero: hero.to_string(),
+        hero_name: hero_name.to_string(),
+        model: model.to_string(),
+        model_name: mname.clone(),
+        glb: project_dir.join("blender").join(format!("{mname}.glb")).display().to_string(),
+        return_dir: project_dir.join("return").display().to_string(),
+        work_blend: project_dir.join("blender").join(format!("{mname}_work.blend")).display().to_string(),
+        parts: parts(&doc),
+        body_groups: summary.body_groups.clone(),
+        attachments: summary.attachments.clone(),
+        bones: summary.bones.clone(),
+    };
+    let out = project_dir.join(PROJECT_FILE);
+    std::fs::write(&out, serde_json::to_vec_pretty(&bp)?).at(&out)?;
+    Ok(out)
+}
+
 #[derive(Serialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct ModelBuildReport {
@@ -603,6 +705,29 @@ mod tests {
         assert!(text.contains("models/heroes_staging/hero/hero_backup.vmdl"));
         assert!(!text.contains("hero_idle.dmx"));
         assert!(text.contains("default_root_bone_name"));
+    }
+
+    #[test]
+    fn parts_and_body_groups() {
+        let src = r#"{ rootNode = { _class = "RootNode" children = [
+            { _class = "RenderMeshList" children = [
+                { _class = "RenderMeshFile" name = "body" filename = "a.dmx" },
+                { _class = "RenderMeshFile" name = "gun" filename = "b.dmx" },
+                { _class = "RenderMeshFile" name = "body_lod1" filename = "c.dmx" },
+                { _class = "Folder" children = [ { _class = "RenderMeshFile" name = "gun_lod1" filename = "d.dmx" } ] },
+            ] },
+            { _class = "BodyGroupList" children = [ { _class = "BodyGroup" name = "DEFAULT" children = [
+                { _class = "BodyGroupChoice" name = "BASE" meshes = [ "body", "gun" ] },
+                { _class = "BodyGroupChoice" name = "NO_GUN" meshes = [ "body" ] },
+            ] } ] },
+        ] } }"#;
+        let p = parts(&kv3text::parse(src).unwrap());
+        assert_eq!(p.len(), 2);
+        assert_eq!(p[0].name, "body");
+        assert_eq!(p[0].lods, vec!["body_lod1"]);
+        assert_eq!(p[0].shown_in, vec!["DEFAULT: BASE", "DEFAULT: NO_GUN"]);
+        assert_eq!(p[1].lods, vec!["gun_lod1"]);
+        assert_eq!(p[1].shown_in, vec!["DEFAULT: BASE"]);
     }
 
     #[test]

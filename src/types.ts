@@ -64,7 +64,7 @@ export interface GameStatus {
 export interface Overview {
   mods: ModEntry[];
   profiles: Profile[];
-  settings: { gameDir: string | null; csdkDir: string | null };
+  settings: { gameDir: string | null; csdkDir: string | null; blenderExe: string | null; blenderAddon: string | null };
   safeMode: SafeModeEvent | null;
   game: GameStatus;
   plan: Plan;
@@ -214,4 +214,19 @@ export interface ModelBuildResult {
   report: { vpk: string; vpkSize: number; files: string[]; warnings: string[]; log: string };
   modId: string;
   modName: string;
+}
+
+export interface BlenderInstall {
+  exe: string;
+  version: string;
+}
+
+export interface Returned {
+  folder: string;
+  sent: string;
+  blender: string;
+  addon: string;
+  glb: string;
+  objects: { object: string; part: string; triangles: number }[];
+  materials: string[];
 }

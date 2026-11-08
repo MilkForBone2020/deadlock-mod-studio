@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { ApplyReport, BuildResult, ExtractResult, HeroInfo, Level, ModelBuildResult, ModelHero, ModelProject, ModelSummary, ModMeta, Overview, Profile, SafeModeEvent, SoundProject, SoundSearch, SoundUse } from "./types";
+import type { ApplyReport, BlenderInstall, Returned, BuildResult, ExtractResult, HeroInfo, Level, ModelBuildResult, ModelHero, ModelProject, ModelSummary, ModMeta, Overview, Profile, SafeModeEvent, SoundProject, SoundSearch, SoundUse } from "./types";
 import { mockApi } from "./mock";
 
 /** False when the UI is opened in a plain browser (`npm run dev`) for design work. */
@@ -53,6 +53,10 @@ const tauriApi = {
   openModelFolder: (id: string, which: "blender" | "return" | "original" | "project") => invoke<void>("open_model_folder", { id, which }),
   extractModelProject: (id: string) => invoke<ExtractResult>("extract_model_project", { id }),
   buildModelProject: (id: string) => invoke<ModelBuildResult>("build_model_project", { id }),
+  detectBlender: () => invoke<BlenderInstall[]>("detect_blender"),
+  setBlenderExe: (path: string) => invoke<void>("set_blender_exe", { path }),
+  editInBlender: (id: string) => invoke<string>("edit_in_blender", { id }),
+  modelReturns: (id: string) => invoke<Returned[]>("model_returns", { id }),
 };
 
 export type Api = typeof tauriApi;

@@ -179,6 +179,7 @@ export function SettingsView({ ov, act, updater }: { ov: Overview; act: Act; upd
       </section>
 
       <CsdkCard ov={ov} act={act} />
+      <BlenderCard ov={ov} act={act} />
 
       <section className="card">
         <h2>App updates</h2>
@@ -255,6 +256,52 @@ export function SettingsView({ ov, act, updater }: { ov: Overview; act: Act; upd
   );
 }
 
+function BlenderCard({ ov, act }: { ov: Overview; act: Act }) {
+  const [exe, setExe] = useState(ov.settings.blenderExe ?? "");
+  useEffect(() => setExe(ov.settings.blenderExe ?? ""), [ov.settings.blenderExe]);
+  const addon = ov.settings.blenderAddon?.split("|")[0];
+  return (
+    <section className="card">
+      <h2>Blender</h2>
+      <p className="hint">
+        Model Builder opens heroes in Blender (4.2 or newer) and installs its add-on there. Point this at{" "}
+        <code>blender.exe</code>.
+      </p>
+      <div className="path-row">
+        <input value={exe} onChange={(e) => setExe(e.target.value)} aria-label="Blender program" spellCheck={false} placeholder="e.g. C:\\Program Files\\Blender Foundation\\Blender 5.0\\blender.exe" />
+        <button
+          className="btn ghost"
+          onClick={async () => {
+            const picked = await open({ multiple: false, filters: [{ name: "Blender", extensions: ["exe"] }], defaultPath: exe || undefined });
+            if (typeof picked === "string") setExe(picked);
+          }}
+        >
+          Browse…
+        </button>
+        <button
+          className="btn ghost"
+          onClick={async () => {
+            const found = await api.detectBlender();
+            if (found.length) setExe(found[0].exe);
+            else await act(() => Promise.reject("Couldn't find Blender automatically. Browse to blender.exe."));
+          }}
+        >
+          Detect
+        </button>
+        <button className="btn primary" disabled={!exe.trim() || exe === ov.settings.blenderExe} onClick={() => act(() => api.setBlenderExe(exe), "Blender saved")}>
+          Save
+        </button>
+      </div>
+      <dl className="facts-grid">
+        <dt>Status</dt>
+        <dd>{ov.settings.blenderExe ? "Set" : "Not set"}</dd>
+        <dt>Add-on</dt>
+        <dd>{addon ? `Deadlock Mod Studio ${addon} installed` : "Installed the first time you use Edit in Blender"}</dd>
+      </dl>
+    </section>
+  );
+}
+
 function CsdkCard({ ov, act }: { ov: Overview; act: Act }) {
   const [dir, setDir] = useState(ov.settings.csdkDir ?? "");
   useEffect(() => setDir(ov.settings.csdkDir ?? ""), [ov.settings.csdkDir]);
@@ -262,7 +309,7 @@ function CsdkCard({ ov, act }: { ov: Overview; act: Act }) {
     <section className="card">
       <h2>CSDK 13</h2>
       <p className="hint">
-        Sound Builder uses CSDK's compiler to turn your audio into game sounds. Point this at the folder that contains{" "}
+        Sound Builder and Model Builder use CSDK's compiler to turn your files into game files. Point this at the folder that contains{" "}
         <code>csdkcfg.exe</code>. Steam needs to be running when you build.
       </p>
       <div className="path-row">

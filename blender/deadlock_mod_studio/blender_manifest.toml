@@ -1,0 +1,16 @@
+schema_version = "1.0.0"
+
+id = "deadlock_mod_studio"
+version = "0.1.0"
+name = "Deadlock Mod Studio"
+tagline = "Edit Deadlock hero models with Deadlock Mod Studio"
+maintainer = "MilkForBone2020"
+type = "add-on"
+website = "https://github.com/MilkForBone2020/deadlock-mod-studio"
+
+blender_version_min = "4.2.0"
+
+license = ["SPDX:GPL-3.0-or-later"]
+
+[permissions]
+files = "Open hero models extracted by the app and save edited models back to its project folder"

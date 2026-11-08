@@ -130,6 +130,16 @@ cd src-tauri
 cargo test -p modcore
 ```
 
+## Blender add-on
+
+`blender/deadlock_mod_studio/` is a Blender extension (4.2 or newer, tested on 5.0). The app builds it in and installs it with Blender's own `blender --command extension install-file` the first time you use **Edit in Blender**. It:
+
+- imports the extracted hero, keeps a wireframe copy of the original, locks the original bones and saves a work file in the project's `blender` folder
+- adds a **Deadlock** tab to the 3D view's sidebar: assign objects to the hero's parts, pose the rig with a few of the hero's animations, and check the model (bones kept and unmoved, every vertex weighted, at most 4 bones per vertex, power-of-two textures, size within ±10% of the original)
+- **Send to app** exports the model and a manifest into the project's `return` folder
+
+You can also install it by hand: zip the folder's two files and use Blender's *Install from Disk*.
+
 ## Third-party code and tools
 
 - The binary KeyValues3 reader (`modcore/src/kv3.rs`) is ported from [ValveResourceFormat](https://github.com/ValveResourceFormat/ValveResourceFormat) (MIT licence).

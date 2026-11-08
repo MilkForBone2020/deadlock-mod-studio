@@ -115,6 +115,8 @@ let modelProjects: ModelProject[] = [
   { id: "m1seven", name: "Seven test rebuild", hero: "gigawatt", model: "models/heroes_staging/gigawatt_prisoner/gigawatt_prisoner.vmdl", created: now(), extracted: null, extractedBuild: null, extractedTool: null, modId: null, lastBuilt: null },
 ];
 let s2vInstalled = false;
+let blenderExe: string | null = "C:\\Program Files\\Blender Foundation\\Blender 5.0\\blender.exe";
+let sentBack = false;
 const sevenSummary: ModelSummary = {
   bones: Array.from({ length: 245 }, (_, i) => (i === 0 ? "root_motion" : `bone_${i}`)),
   meshes: 20,
@@ -134,7 +136,7 @@ export const mockApi: Api = {
   overview: async (): Promise<Overview> => ({
     mods: structuredClone(mods),
     profiles: structuredClone(profiles),
-    settings: { gameDir: "D:\\Games\\SteamLibrary\\steamapps\\common\\Deadlock", csdkDir: "D:\\Desktop\\Reduced_CSDK_13" },
+    settings: { gameDir: "D:\\Games\\SteamLibrary\\steamapps\\common\\Deadlock", csdkDir: "D:\\Desktop\\Reduced_CSDK_13", blenderExe: blenderExe, blenderAddon: null },
     safeMode: null,
     game: { dir: "D:\\Games\\SteamLibrary\\steamapps\\common\\Deadlock", found: true, buildId: BUILD, running: false, addonsLine: true, sharedAddonsLine: true },
     plan: plan(),
@@ -301,4 +303,17 @@ export const mockApi: Api = {
       report: { vpk: "x.vpk", vpkSize: 21_400_000, files: [`${p.model}_c`, p.model.replace(".vmdl", "_backup.vmdl_c")], warnings: ["WARNING: Unknown game data class CCitadelHeroModelGameData_t"], log: "OK: 1 compiled, 0 failed, 0 skipped" },
     };
   },
+  detectBlender: async () => [{ exe: "C:\\Program Files\\Blender Foundation\\Blender 5.0\\blender.exe", version: "5.0" }],
+  setBlenderExe: async (path) => {
+    blenderExe = path;
+  },
+  editInBlender: async () => {
+    await wait(500);
+    sentBack = true;
+    return "Blender is opening and importing the hero. It saves a work file in the project's blender folder.";
+  },
+  modelReturns: async () =>
+    sentBack
+      ? [{ folder: "x", sent: now(), blender: "5.0.0", addon: "0.1.0", glb: "model.glb", objects: [{ object: "outer_costume", part: "outer_costume", triangles: 107910 }, { object: "gun", part: "gun", triangles: 32803 }], materials: ["gigawatt_prisoner"] }]
+      : [],
 };

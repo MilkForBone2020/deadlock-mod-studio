@@ -11,4 +11,6 @@ fn main() {
     let mut doc = modcore::kv3text::parse(&std::fs::read_to_string(&r.template).unwrap()).unwrap();
     modcore::model::use_backup_animations(&mut doc, &a[3]).unwrap();
     std::fs::write(Path::new(&a[4]).join("prepared.vmdl"), modcore::kv3text::to_string(&doc)).unwrap();
+    let p = modcore::model::write_blender_project(Path::new(&a[4]), "test1", "Seven test", "gigawatt", "Seven", &a[3]).unwrap();
+    println!("{}", std::fs::read_to_string(p).unwrap().lines().take(40).collect::<Vec<_>>().join("\n"));
 }

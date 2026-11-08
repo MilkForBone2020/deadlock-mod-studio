@@ -83,6 +83,11 @@ pub struct Settings {
     pub game_dir: Option<String>,
     #[serde(default)]
     pub csdk_dir: Option<String>,
+    #[serde(default)]
+    pub blender_exe: Option<String>,
+    /// "<add-on version>|<blender exe>" the add-on was last installed as.
+    #[serde(default)]
+    pub blender_addon: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]

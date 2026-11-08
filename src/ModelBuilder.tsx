@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { api, errorText, isTauri } from "./api";
-import type { ModelBuildResult, ModelHero, ModelProject, ModelSummary, Overview } from "./types";
+import type { ModelBuildResult, ModelHero, ModelProject, ModelSummary, Overview, Returned } from "./types";
 import { formatDate, formatSize, Icon, Modal } from "./ui";
 
 type Act = (fn: () => Promise<unknown>, ok?: string) => Promise<boolean>;
@@ -120,9 +120,8 @@ export function ModelBuilderView({
             <ol className="steps">
               <li>Name it in <strong>New model mod</strong> on the left, pick the hero and click <strong>Create</strong>.</li>
               <li>Click <strong>Extract</strong>. The app takes the hero's model apart and makes a file for Blender.</li>
-              <li>Click <strong>Build test mod</strong> to rebuild the hero unchanged and check it in game.</li>
+              <li>Click <strong>Edit in Blender</strong>. Edit the model, then use <strong>Send to app</strong> in Blender's Deadlock tab.</li>
             </ol>
-            <p className="hint">Sending your edited model back from Blender comes next, once the test build works.</p>
           </div>
         )}
       </section>
@@ -148,11 +147,21 @@ function ModelEditor({
   const [summary, setSummary] = useState<ModelSummary | null>(null);
   const [result, setResult] = useState<ModelBuildResult | null>(null);
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [returns, setReturns] = useState<Returned[]>([]);
 
   useEffect(() => {
     if (!p.extracted) return setSummary(null);
     api.modelSummary(p.id).then(setSummary).catch(() => setSummary(null));
   }, [p.id, p.extracted]);
+
+  // Models sent back from Blender: check now and whenever the app regains focus.
+  useEffect(() => {
+    const load = () => api.modelReturns(p.id).then(setReturns).catch(() => undefined);
+    void load();
+    window.addEventListener("focus", load);
+    return () => window.removeEventListener("focus", load);
+  }, [p.id]);
+  const latest = returns[0] ?? null;
 
   const builtMod = ov.mods.find((m) => m.id === p.modId) ?? null;
   const outdated = !!p.extracted && !!p.extractedBuild && !!ov.game.buildId && p.extractedBuild !== ov.game.buildId;
@@ -249,22 +258,59 @@ function ModelEditor({
           </button>
         </li>
 
-        <li className={`model-step ${!p.extracted ? "later" : ""}`}>
-          <div className="ms-num">2</div>
+        <li className={`model-step ${!p.extracted ? "later" : latest ? "done" : "current"}`}>
+          <div className="ms-num">{latest ? <Icon name="check" size={14} /> : 2}</div>
           <div className="ms-body">
-            <strong>Open in Blender</strong>
-            <span className="hint">
-              In Blender 4.2: <em>File › Import › glTF 2.0</em> and pick the <code>.glb</code> in this folder. It has every mesh, the
-              full skeleton, materials and a few animations for testing poses.
-            </span>
+            <strong>Edit in Blender</strong>
+            {ov.settings.blenderExe ? (
+              <span className="hint">
+                Opens Blender with {heroName} ready to edit. The first time, the app installs its Blender add-on and saves a
+                work file. Use the <em>Deadlock</em> tab in the sidebar (press N) to assign parts, check the model and{" "}
+                <em>Send to app</em>.
+              </span>
+            ) : (
+              <span className="ms-warn">
+                <Icon name="warn" size={14} /> Blender wasn't found. Set it in Settings (4.2 or newer).
+              </span>
+            )}
           </div>
-          <button className="btn" disabled={!p.extracted} onClick={() => act(() => api.openModelFolder(p.id, "blender"))}>
-            <Icon name="folder" size={14} /> Open folder
-          </button>
+          <div className="row-actions">
+            <button className="btn ghost" disabled={!p.extracted} onClick={() => act(() => api.openModelFolder(p.id, "blender"))} title="Open the project's blender folder">
+              <Icon name="folder" size={14} />
+            </button>
+            <button
+              className={`btn ${latest ? "" : "primary"}`}
+              disabled={!p.extracted || !!busy || outdated}
+              onClick={() =>
+                ov.settings.blenderExe
+                  ? act(() => api.editInBlender(p.id), "Opening Blender. The first time, it installs the add-on and imports the hero (about a minute).")
+                  : goTo("settings")
+              }
+            >
+              {ov.settings.blenderExe ? "Edit in Blender" : "Set up Blender"}
+            </button>
+          </div>
         </li>
 
+        {latest && (
+          <li className="model-step done">
+            <div className="ms-num">
+              <Icon name="check" size={14} />
+            </div>
+            <div className="ms-body">
+              <strong>Back from Blender</strong>
+              <span className="hint">
+                Sent {formatDate(latest.sent)} {new Date(latest.sent).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" })}:{" "}
+                {latest.objects.length} object(s), {latest.objects.reduce((n, o) => n + o.triangles, 0).toLocaleString()} triangles, parts{" "}
+                {[...new Set(latest.objects.map((o) => o.part))].join(", ")}.
+              </span>
+              <span className="hint">Building with your edited model is the next update. For now, the build below rebuilds the original.</span>
+            </div>
+          </li>
+        )}
+
         <li className={`model-step ${!p.extracted ? "later" : p.lastBuilt ? "done" : "current"}`}>
-          <div className="ms-num">{p.lastBuilt ? <Icon name="check" size={14} /> : 3}</div>
+          <div className="ms-num">{p.lastBuilt ? <Icon name="check" size={14} /> : latest ? 4 : 3}</div>
           <div className="ms-body">
             <strong>Build test mod</strong>
             <span className="hint">

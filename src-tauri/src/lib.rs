@@ -7,6 +7,7 @@ use modcore::csdk::{self, BuildReport};
 use modcore::library::{BuildCheck, Library, ModEntry, ModMeta, ModelProject, Profile, SafeModeEvent, Settings, SoundProject};
 use modcore::model::{self, ExtractReport, ModelBuildReport, ModelSummary};
 use modcore::tools;
+use modcore::blender::{self, BlenderInstall, Returned};
 use modcore::vpk::Directory;
 use modcore::sync::{self, ApplyReport, Plan};
 use modcore::{steam, Error};
@@ -760,8 +761,10 @@ async fn extract_model_project(app_handle: tauri::AppHandle, app: State<'_, App>
     })
     .await
     .map_err(|e| e.to_string())??;
+    let hero_name = hero_display_name(&app, &project.hero).await;
     let mut lib = app.lib.lock().unwrap();
     lib.mark_extracted(&id, steam::build_id(&game_dir), model::S2V_VERSION).map_err(err)?;
+    model::write_blender_project(&lib.model_dir(&id), &id, &project.name, &project.hero, &hero_name, &project.model).map_err(err)?;
     lib.log(&format!(
         "Extracted {} for \"{}\": {} bones, {} meshes, {} materials",
         project.model,
@@ -772,6 +775,113 @@ async fn extract_model_project(app_handle: tauri::AppHandle, app: State<'_, App>
     ));
     let project = lib.model_project(&id).map_err(err)?.clone();
     Ok(ExtractResult { report, project })
+}
+
+async fn hero_display_name(app: &App, code: &str) -> String {
+    match catalog_of(app).await {
+        Ok(c) => c.heroes.iter().find(|h| h.code == code).map(|h| h.name.clone()).unwrap_or_else(|| code.to_string()),
+        Err(_) => code.to_string(),
+    }
+}
+
+// ---------- Blender ----------
+
+#[tauri::command]
+fn detect_blender() -> Vec<BlenderInstall> {
+    blender::find_installs(&[])
+}
+
+#[tauri::command]
+fn set_blender_exe(app: State<App>, path: String) -> CmdResult<()> {
+    let p = PathBuf::from(path.trim());
+    let name = p.file_name().map(|n| n.to_string_lossy().to_lowercase()).unwrap_or_default();
+    if !p.is_file() || !name.starts_with("blender") {
+        return Err(format!("{} isn't blender.exe", p.display()));
+    }
+    if !blender::supported(&p) {
+        return Err("The add-on needs Blender 4.2 or newer".into());
+    }
+    let mut lib = app.lib.lock().unwrap();
+    lib.state.settings.blender_exe = Some(p.display().to_string());
+    lib.save().map_err(err)?;
+    lib.log(&format!("Blender set to {}", p.display()));
+    Ok(())
+}
+
+/// Install (or update) the add-on into this Blender if needed.
+fn ensure_addon(exe: &Path, tools_dir: &Path, installed: Option<&str>) -> CmdResult<Option<String>> {
+    let want = format!("{}|{}", blender::addon_version(), exe.display());
+    if installed == Some(want.as_str()) {
+        return Ok(None);
+    }
+    let zip = blender::write_addon_zip(tools_dir).map_err(err)?;
+    let (ok, out) = model::run_tool(exe, &blender::install_args(&zip)).map_err(err)?;
+    if !ok {
+        return Err(format!("Blender couldn't install the add-on.\n\n{}", out.trim()));
+    }
+    Ok(Some(want))
+}
+
+/// Open the project in Blender, installing the add-on first if needed.
+#[tauri::command]
+async fn edit_in_blender(app: State<'_, App>, id: String) -> CmdResult<String> {
+    let (project, dir, tools_dir, exe, installed) = {
+        let mut lib = app.lib.lock().unwrap();
+        if lib.state.settings.blender_exe.is_none() {
+            if let Some(b) = blender::find_installs(&[]).into_iter().find(|b| blender::supported(Path::new(&b.exe))) {
+                lib.state.settings.blender_exe = Some(b.exe.clone());
+                lib.log(&format!("Found Blender {} at {}", b.version, b.exe));
+                lib.save().map_err(err)?;
+            }
+        }
+        let p = lib.model_project(&id).map_err(err)?.clone();
+        let exe = lib.state.settings.blender_exe.clone().ok_or("Blender wasn't found. Set it in Settings.")?;
+        (p, lib.model_dir(&id), lib.root.join("tools"), PathBuf::from(exe), lib.state.settings.blender_addon.clone())
+    };
+    if project.extracted.is_none() {
+        return Err("Extract the hero first".into());
+    }
+    if !exe.is_file() {
+        return Err(format!("Blender isn't at {} any more. Set it in Settings.", exe.display()));
+    }
+    let hero_name = hero_display_name(&app, &project.hero).await;
+    let pj = model::write_blender_project(&dir, &id, &project.name, &project.hero, &hero_name, &project.model).map_err(err)?;
+    let bp: model::BlenderProject = serde_json::from_slice(&std::fs::read(&pj).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
+
+    let exe2 = exe.clone();
+    let newly = tauri::async_runtime::spawn_blocking(move || ensure_addon(&exe2, &tools_dir, installed.as_deref()))
+        .await
+        .map_err(|e| e.to_string())??;
+    if let Some(v) = newly {
+        let mut lib = app.lib.lock().unwrap();
+        lib.state.settings.blender_addon = Some(v);
+        lib.save().map_err(err)?;
+        lib.log(&format!("Installed the Blender add-on {} into {}", blender::addon_version(), exe.display()));
+    }
+
+    let work = PathBuf::from(&bp.work_blend);
+    let first = !work.is_file();
+    let mut cmd = std::process::Command::new(&exe);
+    cmd.args(blender::open_args(&pj, &work));
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW (hides the console, not Blender)
+    }
+    cmd.spawn().map_err(|e| format!("Couldn't start Blender: {e}"))?;
+    app.lib.lock().unwrap().log(&format!("Opened \"{}\" in Blender", project.name));
+    Ok(if first {
+        "Blender is opening and importing the hero. It saves a work file in the project's blender folder.".into()
+    } else {
+        "Blender is opening your work file.".into()
+    })
+}
+
+/// Models sent back from Blender for this project, newest first.
+#[tauri::command]
+fn model_returns(app: State<App>, id: String) -> Vec<Returned> {
+    let lib = app.lib.lock().unwrap();
+    blender::returned(&lib.model_dir(&id).join("return"))
 }
 
 #[derive(Serialize)]
@@ -834,6 +944,13 @@ pub fn run() {
                     lib.save()?;
                 }
             }
+            if lib.state.settings.blender_exe.is_none() {
+                if let Some(b) = blender::find_installs(&[]).into_iter().find(|b| blender::supported(Path::new(&b.exe))) {
+                    lib.state.settings.blender_exe = Some(b.exe.clone());
+                    lib.log(&format!("Found Blender {} at {}", b.version, b.exe));
+                    lib.save()?;
+                }
+            }
             if lib.state.settings.csdk_dir.is_none() {
                 if let Some(found) = csdk::detect() {
                     lib.state.settings.csdk_dir = Some(found.display().to_string());
@@ -889,6 +1006,10 @@ pub fn run() {
             open_model_folder,
             extract_model_project,
             build_model_project,
+            detect_blender,
+            set_blender_exe,
+            edit_in_blender,
+            model_returns,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Deadlock Mod Studio");
