@@ -48,9 +48,8 @@ fn stream(vd: &dmx::Element, name: &str, per: usize) -> Option<Stream> {
     Some(Stream { values, per, indices })
 }
 
-fn quant(p: [f64; 3]) -> (i64, i64, i64) {
-    ((p[0] * 10.0).round() as i64, (p[1] * 10.0).round() as i64, (p[2] * 10.0).round() as i64)
-}
+/// A vertex for comparison: position, UV, (joint, weight) sorted by joint.
+type Fingerprint = ([f64; 3], [f32; 2], Vec<(i32, f32)>);
 
 /// Nearest-neighbour lookup on a grid of 2-unit cells.
 struct Grid {
@@ -232,8 +231,8 @@ pub fn swap(original: &[u8], meshes: &[&SkinnedMesh], materials: &HashMap<String
     let orig_bi = vd.get("blendindices$0").map(dmx::ints).unwrap_or_default();
     let orig_bw = vd.get("blendweights$0").map(dmx::floats).unwrap_or_default();
     // One vertex as (position, uv, bone weights sorted by bone).
-    let mut orig_v: Vec<([f64; 3], [f32; 2], Vec<(i32, f32)>)> = vec![];
-    for k in 0..orig_points.len() {
+    let mut orig_v: Vec<Fingerprint> = vec![];
+    for (k, point) in orig_points.iter().enumerate() {
         let pi = orig_pos.indices[k] as usize;
         let uvv = orig_uv
             .as_ref()
@@ -247,16 +246,16 @@ pub fn swap(original: &[u8], meshes: &[&SkinnedMesh], materials: &HashMap<String
             .filter(|w| w.1 > 0.0)
             .collect();
         ws.sort_by_key(|w| w.0);
-        orig_v.push((orig_points[k], uvv, ws));
+        orig_v.push((*point, uvv, ws));
     }
-    let new_v: Vec<([f64; 3], [f32; 2], Vec<(i32, f32)>)> = (0..pos.len())
+    let new_v: Vec<Fingerprint> = (0..pos.len())
         .map(|i| {
             let mut ws: Vec<(i32, f32)> = infl[i].iter().copied().filter(|w| w.1 > 0.0).collect();
             ws.sort_by_key(|w| w.0);
             (pos[i], uv[i], ws)
         })
         .collect();
-    let same = |a: &([f64; 3], [f32; 2], Vec<(i32, f32)>), b: &([f64; 3], [f32; 2], Vec<(i32, f32)>)| {
+    let same = |a: &Fingerprint, b: &Fingerprint| {
         (0..3).all(|k| (a.0[k] - b.0[k]).abs() < 0.01)
             && (a.1[0] - b.1[0]).abs() < 0.001
             && (a.1[1] - b.1[1]).abs() < 0.001
@@ -264,7 +263,7 @@ pub fn swap(original: &[u8], meshes: &[&SkinnedMesh], materials: &HashMap<String
             && a.2.iter().zip(&b.2).all(|(x, y)| x.0 == y.0 && (x.1 - y.1).abs() < 0.005)
     };
     // Every vertex on each side has an identical partner on the other.
-    let all_matched = |from: &[([f64; 3], [f32; 2], Vec<(i32, f32)>)], to: &[([f64; 3], [f32; 2], Vec<(i32, f32)>)]| -> usize {
+    let all_matched = |from: &[Fingerprint], to: &[Fingerprint]| -> usize {
         let grid = Grid::new(to.iter().map(|v| v.0).collect());
         from.iter().filter(|v| !grid.within(v.0, 0.01).iter().any(|&j| same(v, &to[j]))).count()
     };
