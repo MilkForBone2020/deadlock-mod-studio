@@ -163,7 +163,9 @@ export function SettingsView({ ov, act }: { ov: Overview; act: Act }) {
           <dt>Steam build</dt>
           <dd>{ov.game.buildId ?? "Unknown"}</dd>
           <dt>gameinfo.gi</dt>
-          <dd>{ov.game.addonsLine == null ? "—" : ov.game.addonsLine ? "Loads the addons folder" : "Vanilla (addons not loaded)"}</dd>
+          <dd>{ov.game.addonsLine == null ? "—" : ov.game.addonsLine ? "Loads addons_studio (my mods)" : "addons_studio not loaded"}</dd>
+          <dt>Other managers</dt>
+          <dd>{ov.game.sharedAddonsLine ? "Deadlock Mod Manager's addons folder is active (left alone)" : "None detected"}</dd>
         </dl>
         <div className="row-actions">
           <button className="btn ghost" disabled={!ov.game.found} onClick={() => act(() => api.openFolder("game"))}>
@@ -178,7 +180,7 @@ export function SettingsView({ ov, act }: { ov: Overview; act: Act }) {
       <section className="card">
         <h2>Safe mode</h2>
         <p className="hint">
-          Always on. When Steam installs a new Deadlock build, every mod is switched off and removed from the addons
+          Always on. When Steam installs a new Deadlock build, every mod is switched off and removed from the addons_studio
           folder. Turn mods back on one at a time and mark each one verified once it works.
         </p>
       </section>
@@ -186,8 +188,9 @@ export function SettingsView({ ov, act }: { ov: Overview; act: Act }) {
       <section className="card danger-card">
         <h2>Restore vanilla</h2>
         <p className="hint">
-          Switches every mod off, removes the files this app placed in addons, and takes the addons line out of
-          gameinfo.gi. Your library and profiles are kept. Files you put in addons yourself are never touched.
+          Switches every mod off, removes the files this app placed in addons_studio, and takes the addons_studio line out of
+          gameinfo.gi. Your library and profiles are kept. Deadlock Mod Manager's addons folder and its line are
+          never touched.
         </p>
         {confirmVanilla ? (
           <div className="row-actions">

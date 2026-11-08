@@ -80,7 +80,7 @@ export const mockApi: Api = {
     profiles: structuredClone(profiles),
     settings: { gameDir: "D:\\Games\\SteamLibrary\\steamapps\\common\\Deadlock" },
     safeMode: null,
-    game: { dir: "D:\\Games\\SteamLibrary\\steamapps\\common\\Deadlock", found: true, buildId: BUILD, running: false, addonsLine: true },
+    game: { dir: "D:\\Games\\SteamLibrary\\steamapps\\common\\Deadlock", found: true, buildId: BUILD, running: false, addonsLine: true, sharedAddonsLine: true },
     plan: plan(),
     conflicts: conflicts(),
     dataDir: "C:\\Users\\you\\AppData\\Roaming\\app.deadlockmodstudio.local",

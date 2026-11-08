@@ -58,6 +58,7 @@ export interface GameStatus {
   buildId: string | null;
   running: boolean;
   addonsLine: boolean | null;
+  sharedAddonsLine: boolean | null;
 }
 
 export interface Overview {

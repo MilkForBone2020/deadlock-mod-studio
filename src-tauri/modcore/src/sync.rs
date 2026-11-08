@@ -132,7 +132,7 @@ pub fn plan(lib: &Library, game_dir: &Path) -> Result<Plan> {
         }
         if on_disk.contains(&lname) && !managed_names.contains(&lname) {
             p.blockers.push(format!(
-                "addons\\{name} is already there and wasn't put there by this app. Move it out of the addons folder (or import it into the library) and try again."
+                "addons_studio\\{name} is already there and wasn't put there by this app. Move it out of the addons_studio folder (or import it into the library) and try again."
             ));
             continue;
         }
@@ -147,7 +147,7 @@ pub fn plan(lib: &Library, game_dir: &Path) -> Result<Plan> {
         on_disk.iter().filter(|n| is_pak_name(n) && !managed_names.contains(*n)).collect();
     if !foreign.is_empty() {
         p.warnings.push(format!(
-            "{} VPK(s) in addons weren't placed by this app and will also load: {}",
+            "{} VPK(s) in addons_studio weren't placed by this app and will also load: {}",
             foreign.len(),
             foreign.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", ")
         ));
@@ -236,14 +236,14 @@ pub fn apply(lib: &mut Library, game_dir: &Path) -> Result<ApplyReport> {
             match a {
                 Action::CreateAddonsDir => {
                     std::fs::create_dir_all(&addons).at(&addons)?;
-                    report.done.push("Created the addons folder".into());
+                    report.done.push("Created the addons_studio folder".into());
                 }
                 Action::Remove { file, mod_name } => {
                     let path = addons.join(file);
                     std::fs::remove_file(&path).at(&path)?;
                     lib.state.managed.retain(|m| !m.name.eq_ignore_ascii_case(file));
                     let what = mod_name.clone().unwrap_or_else(|| "deleted mod".into());
-                    report.done.push(format!("Removed addons\\{file} ({what})"));
+                    report.done.push(format!("Removed addons_studio\\{file} ({what})"));
                 }
                 _ => {}
             }
@@ -265,7 +265,7 @@ pub fn apply(lib: &mut Library, game_dir: &Path) -> Result<ApplyReport> {
                     stamp: m.stamp.clone(),
                     size: m.size,
                 });
-                report.done.push(format!("Placed \"{mod_name}\" as addons\\{file}"));
+                report.done.push(format!("Placed \"{mod_name}\" as addons_studio\\{file}"));
             }
         }
         let gi = steam::gameinfo_path(game_dir);
@@ -282,9 +282,9 @@ pub fn apply(lib: &mut Library, game_dir: &Path) -> Result<ApplyReport> {
                     report.backup = Some(backup_gameinfo(lib, game_dir)?);
                     write_gameinfo(&gi, &new_text)?;
                     report.done.push(if matches!(a, Action::AddSearchPath) {
-                        "Added the addons line to gameinfo.gi".into()
+                        "Added the addons_studio line to gameinfo.gi".into()
                     } else {
-                        "Removed the addons line from gameinfo.gi".into()
+                        "Removed the addons_studio line from gameinfo.gi".into()
                     });
                 }
             }
@@ -482,6 +482,29 @@ mod tests {
         assert_eq!(names.len(), BACKUPS_KEPT);
         assert!(newest.ends_with(names.last().unwrap()));
         assert_eq!(std::fs::read_to_string(&newest).unwrap(), GI);
+    }
+
+    #[test]
+    fn other_managers_folder_and_line_are_left_alone() {
+        let mut f = fx(1);
+        let dmm_gi = GI.replace("\t\t\tGame\t\tcitadel\r\n", "\t\t\tGame\t\tcitadel/addons\r\n\t\t\tGame\t\tcitadel\r\n");
+        std::fs::write(steam::gameinfo_path(&f.game), &dmm_gi).unwrap();
+        let theirs = steam::citadel_dir(&f.game).join("addons");
+        std::fs::create_dir_all(&theirs).unwrap();
+        std::fs::write(theirs.join("pak01_dir.vpk"), b"dmm mod").unwrap();
+
+        // Nothing on: nothing to do, even though their line is present.
+        assert!(plan(&f.lib, &f.game).unwrap().is_empty());
+
+        f.lib.set_all_enabled(true).unwrap();
+        apply(&mut f.lib, &f.game).unwrap();
+        assert_eq!(addons(&f), vec!["pak01_dir.vpk"]);
+        assert!(gi(&f).contains("citadel/addons_studio\r\n\t\t\tGame\t\tcitadel/addons\r\n"));
+
+        f.lib.set_all_enabled(false).unwrap();
+        apply(&mut f.lib, &f.game).unwrap();
+        assert_eq!(gi(&f), dmm_gi, "their line must survive");
+        assert_eq!(std::fs::read(theirs.join("pak01_dir.vpk")).unwrap(), b"dmm mod");
     }
 
     #[test]

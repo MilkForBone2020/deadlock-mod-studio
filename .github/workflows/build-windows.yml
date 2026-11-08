@@ -1,5 +1,6 @@
 name: Build Windows installer
 
+# Runs on every push to main, and on demand from the Actions tab.
 on:
   push:
     branches: [main]
@@ -11,49 +12,30 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      - name: Find the project folder
-        shell: pwsh
-        run: |
-          $pkg = Get-ChildItem -Path . -Filter package.json -Recurse -Depth 4 -File |
-            Where-Object { $_.FullName -notmatch 'node_modules' -and (Test-Path (Join-Path $_.DirectoryName 'src-tauri')) } |
-            Select-Object -First 1
-          if (-not $pkg) {
-            Write-Host "::error::Project files not found. Upload the contents of the deadlock-mod-studio folder (package.json, src, src-tauri...) to the repo."
-            exit 1
-          }
-          Push-Location $pkg.DirectoryName; $p = Resolve-Path -Relative $env:GITHUB_WORKSPACE; Pop-Location
-          $p = (Resolve-Path -Relative $pkg.DirectoryName) -replace '\\','/' -replace '^\./',''
-          if ($p -eq '') { $p = '.' }
-          "PROJ=$p" | Out-File -FilePath $env:GITHUB_ENV -Append
-          Write-Host "Project folder: $p"
-
       - uses: actions/setup-node@v5
         with:
           node-version: 22
           cache: npm
-          cache-dependency-path: ${{ env.PROJ }}/package-lock.json
 
       - uses: dtolnay/rust-toolchain@stable
 
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: ${{ env.PROJ }}/src-tauri
+          workspaces: src-tauri
 
       - name: Install frontend packages
-        working-directory: ${{ env.PROJ }}
         run: npm ci
 
       - name: Run core tests on Windows
-        working-directory: ${{ env.PROJ }}/src-tauri
+        working-directory: src-tauri
         run: cargo test -p modcore
 
       - name: Build installer
-        working-directory: ${{ env.PROJ }}
         run: npx tauri build
 
       - name: Upload installer
         uses: actions/upload-artifact@v4
         with:
           name: Deadlock-Mod-Studio-installer
-          path: ${{ env.PROJ }}/src-tauri/target/release/bundle/nsis/*.exe
+          path: src-tauri/target/release/bundle/nsis/*.exe
           if-no-files-found: error

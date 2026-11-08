@@ -6,11 +6,15 @@ updates, and safe edits to `gameinfo.gi`.
 
 It follows the ground rules in the planning doc:
 
-- Only the `SearchPaths` block of `gameinfo.gi` is ever edited, and only to add
-  or remove one line: `Game citadel/addons`. ConVars are never touched.
+- The app uses its own folder, `game\citadel\addons_studio`, and its own line in
+  `gameinfo.gi`: `Game citadel/addons_studio`. Deadlock Mod Manager's `addons`
+  folder and its `Game citadel/addons` line are never touched, so both managers
+  can be used side by side. My own mods load first, so they win any clash.
+- Only the `SearchPaths` block of `gameinfo.gi` is ever edited, and only that
+  one line. ConVars are never touched.
 - `gameinfo.gi` is backed up before every edit (the newest 10 are kept).
-- Only files the app placed in `addons` are ever removed. Anything you put there
-  yourself is left alone, and the app refuses to overwrite it.
+- Only files the app placed in `addons_studio` are ever removed. Anything you put
+  there yourself is left alone, and the app refuses to overwrite it.
 - Nothing changes while Deadlock is running.
 - Nothing in the game folder changes until you press **Review & apply**, which
   shows every file operation first.
@@ -47,11 +51,11 @@ src-tauri\target\release\bundle\nsis\Deadlock Mod Studio_0.1.0_x64-setup.exe
    `D:\Games\SteamLibrary\steamapps\common\Deadlock` as **Found**.
 2. Import one small VPK (drag it onto the window or use **Import VPK**).
 3. Turn it on, press **Review & apply**, read the list, then apply.
-4. Check `game\citadel\addons\pak01_dir.vpk` exists and `gameinfo.gi` has the new
-   `Game citadel/addons` line. A backup should be in **Activity → gameinfo backups**.
+4. Check `game\citadel\addons_studio\pak01_dir.vpk` exists and `gameinfo.gi` has the new
+   `Game citadel/addons_studio` line. A backup should be in **Activity → gameinfo backups**.
 5. Launch Deadlock and check the mod works. Then mark it **Works on this build**.
-6. Close the game, go to **Settings → Restore vanilla**. The addons copy should be
-   gone and `gameinfo.gi` back exactly as Valve shipped it.
+6. Close the game, go to **Settings → Restore vanilla**. The addons_studio copy should be
+   gone and `gameinfo.gi` back exactly as it was before (Deadlock Mod Manager's line stays).
 
 **Load order is still to confirm.** The top of the list becomes `pak01_dir.vpk`.
 Which number wins when two mods change the same file hasn't been tested yet:
@@ -61,7 +65,7 @@ enable two mods that share a file (the app flags these) and see which one plays.
 
 On start, every 60 seconds, and whenever the window gets focus, the app reads
 Deadlock's build ID from Steam (`steamapps\appmanifest_1422450.acf`). When it
-changes, every mod is switched off and the app's files are removed from `addons`
+changes, every mod is switched off and the app's files are removed from `addons_studio`
 (straight away if the game is closed, otherwise as soon as you apply). A banner
 lists what was switched off. Mods marked verified on the old build show
 **Needs testing**.

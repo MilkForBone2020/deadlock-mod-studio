@@ -27,8 +27,10 @@ struct GameStatus {
     found: bool,
     build_id: Option<String>,
     running: bool,
-    /// Whether gameinfo.gi currently loads the addons folder.
+    /// Whether gameinfo.gi currently loads this app's addons_studio folder.
     addons_line: Option<bool>,
+    /// Whether another manager's `Game citadel/addons` line is present.
+    shared_addons_line: Option<bool>,
 }
 
 #[derive(Serialize)]
@@ -75,11 +77,13 @@ fn overview_of(lib: &Library) -> CmdResult<Overview> {
     let dir = game_dir(lib);
     let found = dir.as_deref().map(steam::is_game_dir).unwrap_or(false);
     let build_id = dir.as_deref().and_then(steam::build_id);
-    let addons_line = dir.as_deref().filter(|_| found).and_then(|d| {
-        std::fs::read_to_string(steam::gameinfo_path(d))
-            .ok()
-            .and_then(|t| modcore::gameinfo::has_addons_path(&t).ok())
-    });
+    let gi_text = dir
+        .as_deref()
+        .filter(|_| found)
+        .and_then(|d| std::fs::read_to_string(steam::gameinfo_path(d)).ok());
+    let addons_line = gi_text.as_deref().and_then(|t| modcore::gameinfo::has_addons_path(t).ok());
+    let shared_addons_line =
+        gi_text.as_deref().and_then(|t| modcore::gameinfo::has_shared_addons_path(t).ok());
     let plan = match dir.as_deref() {
         Some(d) => sync::plan(lib, d).map_err(err)?,
         None => Plan {
@@ -98,6 +102,7 @@ fn overview_of(lib: &Library) -> CmdResult<Overview> {
             build_id,
             running: game_running(),
             addons_line,
+            shared_addons_line,
         },
         plan,
         conflicts: lib.conflicts(),
@@ -112,7 +117,7 @@ fn get_overview(app: State<App>) -> CmdResult<Overview> {
 }
 
 /// Run at startup and on a timer. On a new Deadlock build every mod is
-/// switched off, and the addons folder is cleared straight away if the
+/// switched off, and the addons_studio folder is cleared straight away if the
 /// game isn't running (otherwise it waits as a pending change).
 #[tauri::command]
 fn check_for_update(app: State<App>) -> CmdResult<Option<SafeModeEvent>> {
@@ -123,7 +128,7 @@ fn check_for_update(app: State<App>) -> CmdResult<Option<SafeModeEvent>> {
         BuildCheck::Changed(ev) => {
             if !game_running() {
                 if let Err(e) = sync::apply(&mut lib, &dir) {
-                    lib.log(&format!("Safe mode could not clear addons yet: {e}"));
+                    lib.log(&format!("Safe mode could not clear addons_studio yet: {e}"));
                 }
             }
             Ok(Some(ev))
@@ -235,7 +240,7 @@ fn apply_changes(app: State<App>) -> CmdResult<ApplyReport> {
 }
 
 /// Switch every mod off and make the game folder vanilla again: managed
-/// VPKs removed, the addons line taken out of gameinfo.gi.
+/// VPKs removed, the addons_studio line taken out of gameinfo.gi.
 #[tauri::command]
 fn restore_vanilla(app: State<App>) -> CmdResult<ApplyReport> {
     ensure_closed()?;

@@ -183,7 +183,7 @@ export default function App() {
           <StatusLine
             ok={ov.game.addonsLine === true}
             neutral={!ov.mods.some((m) => m.enabled) && ov.game.addonsLine !== true}
-            label={ov.game.addonsLine ? "Loading mods" : "Vanilla"}
+            label={ov.game.addonsLine ? "Loading my mods" : "My mods not loaded"}
           />
           <div className="build">Build {ov.game.buildId ?? "unknown"}</div>
           <button className="btn small launch" disabled={!ov.game.found || ov.game.running || pending > 0} onClick={() => act(() => api.launchGame())} title={pending > 0 ? "Apply your changes first" : "Launch through Steam"}>
@@ -212,7 +212,7 @@ export default function App() {
             <Icon name="warn" size={20} />
             <div>
               <strong>Mods aren't loading</strong>
-              <p>Steam put back Valve's gameinfo.gi (an update or "Verify integrity"). Apply to add the addons line again.</p>
+              <p>Steam put back Valve's gameinfo.gi (an update or "Verify integrity"). Apply to add the addons_studio line again.</p>
             </div>
           </div>
         )}
@@ -297,15 +297,15 @@ function StatusLine({ ok, label, warn, neutral }: { ok: boolean; label: string; 
 function describe(a: Action): { icon: string; text: string; cls: string } {
   switch (a.kind) {
     case "createAddonsDir":
-      return { icon: "folder", text: "Create the addons folder", cls: "add" };
+      return { icon: "folder", text: "Create the addons_studio folder", cls: "add" };
     case "copy":
-      return { icon: "plus", text: `Place "${a.modName}" as addons\\${a.file}`, cls: "add" };
+      return { icon: "plus", text: `Place "${a.modName}" as addons_studio\\${a.file}`, cls: "add" };
     case "remove":
-      return { icon: "trash", text: `Remove addons\\${a.file}${a.modName ? ` ("${a.modName}")` : ""}`, cls: "remove" };
+      return { icon: "trash", text: `Remove addons_studio\\${a.file}${a.modName ? ` ("${a.modName}")` : ""}`, cls: "remove" };
     case "addSearchPath":
-      return { icon: "check", text: "Add Game citadel/addons to gameinfo.gi (backed up first)", cls: "add" };
+      return { icon: "check", text: "Add Game citadel/addons_studio to gameinfo.gi (backed up first)", cls: "add" };
     case "removeSearchPath":
-      return { icon: "close", text: "Take the addons line out of gameinfo.gi (backed up first)", cls: "remove" };
+      return { icon: "close", text: "Take the addons_studio line out of gameinfo.gi (backed up first)", cls: "remove" };
   }
 }
 
@@ -366,9 +366,9 @@ function PlanModal({ ov, close, apply, busy }: { ov: Overview; close: () => void
         </div>
       )}
       <div className="plan-group">
-        <h3>Addons folder afterwards</h3>
+        <h3>addons_studio folder afterwards</h3>
         {p.layout.length === 0 ? (
-          <p className="hint">Empty: Deadlock runs vanilla.</p>
+          <p className="hint">Empty: none of your mods load.</p>
         ) : (
           <ol className="layout-list">
             {p.layout.map(([file, name]) => (

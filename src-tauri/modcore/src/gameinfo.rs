@@ -1,12 +1,15 @@
 //! Reading and patching `game/citadel/gameinfo.gi`.
 //!
 //! Ground rule: the app only ever touches the `SearchPaths` block, and only
-//! to add or remove one line: `Game citadel/addons`. ConVars and everything
-//! else in the file are left byte-for-byte as Valve shipped them.
+//! to add or remove its own line: `Game citadel/addons_studio`. Other lines,
+//! including the `Game citadel/addons` line used by Deadlock Mod Manager,
+//! ConVars and everything else, are left byte-for-byte as they are.
 
 use crate::{Error, Result};
 
-pub const ADDONS_VALUE: &str = "citadel/addons";
+pub const ADDONS_VALUE: &str = "citadel/addons_studio";
+/// The folder other mod managers use. Never added or removed by this app.
+pub const SHARED_ADDONS_VALUE: &str = "citadel/addons";
 
 /// Strip a `//` comment that is not inside quotes.
 fn strip_comment(line: &str) -> &str {
@@ -140,9 +143,24 @@ fn is_addons_line(line: &str) -> bool {
     t.len() == 2 && t[0].eq_ignore_ascii_case("Game") && t[1].eq_ignore_ascii_case(ADDONS_VALUE)
 }
 
-fn is_game_citadel_line(line: &str) -> bool {
+/// Our line goes directly above the first `Game citadel/addons` (another
+/// manager's folder) or `Game citadel` line, so my own mods take priority
+/// over both.
+fn is_insert_anchor(line: &str) -> bool {
     let t = tokens(body(line));
-    t.len() == 2 && t[0].eq_ignore_ascii_case("Game") && t[1].eq_ignore_ascii_case("citadel")
+    t.len() == 2
+        && t[0].eq_ignore_ascii_case("Game")
+        && (t[1].eq_ignore_ascii_case("citadel") || t[1].eq_ignore_ascii_case(SHARED_ADDONS_VALUE))
+}
+
+/// True when another manager's `Game citadel/addons` line is present.
+pub fn has_shared_addons_path(text: &str) -> Result<bool> {
+    let lines = split_keep_endings(text);
+    let (open, close) = find_search_paths(&lines)?;
+    Ok(lines[open..=close].iter().any(|l| {
+        let t = tokens(body(l));
+        t.len() == 2 && t[0].eq_ignore_ascii_case("Game") && t[1].eq_ignore_ascii_case(SHARED_ADDONS_VALUE)
+    }))
 }
 
 /// True when the SearchPaths block already loads the addons folder.
@@ -152,8 +170,9 @@ pub fn has_addons_path(text: &str) -> Result<bool> {
     Ok(lines[open..=close].iter().any(|l| is_addons_line(l)))
 }
 
-/// Add `Game citadel/addons` directly above the first `Game citadel` line in
-/// SearchPaths, copying that line's indentation and spacing. Returns the text
+/// Add `Game citadel/addons_studio` directly above the first `Game
+/// citadel/addons` or `Game citadel` line in SearchPaths, copying that line's
+/// indentation and spacing. Returns the text
 /// unchanged if the line is already there.
 pub fn add_addons_path(text: &str) -> Result<String> {
     if has_addons_path(text)? {
@@ -162,7 +181,7 @@ pub fn add_addons_path(text: &str) -> Result<String> {
     let lines = split_keep_endings(text);
     let (open, close) = find_search_paths(&lines)?;
     let target = (open..=close)
-        .find(|&i| is_game_citadel_line(lines[i]))
+        .find(|&i| is_insert_anchor(lines[i]))
         .ok_or_else(|| Error::msg("SearchPaths has no `Game citadel` line to insert above"))?;
 
     let model = lines[target];
@@ -194,7 +213,7 @@ pub fn add_addons_path(text: &str) -> Result<String> {
     Ok(out)
 }
 
-/// Remove every `Game citadel/addons` line from SearchPaths. Text outside
+/// Remove every `Game citadel/addons_studio` line from SearchPaths. Text outside
 /// that block is never changed.
 pub fn remove_addons_path(text: &str) -> Result<String> {
     let lines = split_keep_endings(text);
@@ -251,9 +270,9 @@ mod tests {
         let out = add_addons_path(SAMPLE).unwrap();
         assert!(has_addons_path(&out).unwrap());
         assert!(out.contains(
-            "\t\t\tWrite               citadel\r\n\t\t\tGame                citadel/addons\r\n\t\t\tGame                citadel\r\n"
+            "\t\t\tWrite               citadel\r\n\t\t\tGame                citadel/addons_studio\r\n\t\t\tGame                citadel\r\n"
         ));
-        assert_eq!(out.len(), SAMPLE.len() + "\t\t\tGame                citadel/addons\r\n".len());
+        assert_eq!(out.len(), SAMPLE.len() + "\t\t\tGame                citadel/addons_studio\r\n".len());
     }
 
     #[test]
@@ -280,13 +299,13 @@ mod tests {
     fn handles_brace_on_same_line_and_quotes_and_lf() {
         let t = "GameInfo\n{\n  FileSystem\n  {\n    SearchPaths {\n      \"Game\" \"citadel\"\n      \"Game\" \"core\"\n    }\n  }\n}\n";
         let out = add_addons_path(t).unwrap();
-        assert!(out.contains("      \"Game\" \"citadel/addons\"\n      \"Game\" \"citadel\"\n"));
+        assert!(out.contains("      \"Game\" \"citadel/addons_studio\"\n      \"Game\" \"citadel\"\n"));
         assert_eq!(remove_addons_path(&out).unwrap(), t);
     }
 
     #[test]
     fn ignores_addons_line_outside_search_paths() {
-        let t = "GameInfo\n{\n  Game citadel/addons\n  SearchPaths\n  {\n    Game citadel\n  }\n}\n";
+        let t = "GameInfo\n{\n  Game citadel/addons_studio\n  SearchPaths\n  {\n    Game citadel\n  }\n}\n";
         assert!(!has_addons_path(t).unwrap());
         let removed = remove_addons_path(t).unwrap();
         assert_eq!(removed, t);
@@ -298,6 +317,19 @@ mod tests {
         assert!(validate("a\n}\n").is_err());
         assert!(validate("a \"b\n").is_err());
         assert!(validate(SAMPLE).is_ok());
+    }
+
+    #[test]
+    fn coexists_with_other_manager_line() {
+        let t = "GameInfo\n{\n  SearchPaths\n  {\n    Game\tcitadel/addons\n    Game\tcitadel\n  }\n}\n";
+        assert!(!has_addons_path(t).unwrap());
+        assert!(has_shared_addons_path(t).unwrap());
+        let out = add_addons_path(t).unwrap();
+        // Ours goes above theirs, theirs is untouched.
+        assert!(out.contains("    Game\tcitadel/addons_studio\n    Game\tcitadel/addons\n    Game\tcitadel\n"));
+        let back = remove_addons_path(&out).unwrap();
+        assert_eq!(back, t, "removing ours must leave the other manager's line");
+        assert!(has_shared_addons_path(&back).unwrap());
     }
 
     #[test]

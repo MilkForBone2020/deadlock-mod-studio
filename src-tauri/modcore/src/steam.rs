@@ -14,8 +14,10 @@ pub fn gameinfo_path(game_dir: &Path) -> PathBuf {
     citadel_dir(game_dir).join("gameinfo.gi")
 }
 
+/// This app's own addons folder. Deadlock Mod Manager's `addons` folder is
+/// never read from or written to.
 pub fn addons_dir(game_dir: &Path) -> PathBuf {
-    citadel_dir(game_dir).join("addons")
+    citadel_dir(game_dir).join("addons_studio")
 }
 
 /// A folder counts as a Deadlock install if it has game/citadel/gameinfo.gi.
