@@ -22,6 +22,7 @@ const paths: Record<string, string> = {
   swap: "M7 7h11l-3-3M17 17H6l3 3",
   trash: "M5 7h14M10 7V4h4v3M7 7l1 13h8l1-13",
   layers: "M12 3l9 5-9 5-9-5zM3 13l9 5 9-5",
+  wave: "M3 12h2M7 8v8M11 5v14M15 9v6M19 11v2M21 12h0",
 };
 
 export function Icon({ name, size = 16 }: { name: keyof typeof paths | string; size?: number }) {

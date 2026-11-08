@@ -71,6 +71,23 @@ src-tauri\target\release\bundle\nsis\Deadlock Mod Studio_0.1.0_x64-setup.exe
 Which number wins when two mods change the same file hasn't been tested yet:
 enable two mods that share a file (the app flags these) and see which one plays.
 
+## Sound Builder
+
+Make sound mods without opening CSDK's tools. Create a sound mod, add the
+game sounds it replaces (searched straight from Deadlock's own files, with
+preview), and choose your files: MP3, WAV, MP4, M4A, OGG, FLAC or AAC.
+**Build mod** then, for each sound:
+
+1. reads the original from the game and measures its loudness and peak,
+2. converts your file to the original's channel count and turns it down if
+   it's louder (never up), per the ground rules,
+3. writes a WAV at the original's path in a `dms_*` addon inside CSDK
+   (looping sounds get WAV loop markers),
+4. compiles it with `resourcecompiler.exe`,
+
+and packs everything into one VPK in your library. Rebuilding updates the
+same library mod. Needs CSDK 13 (set its folder in Settings) and Steam running.
+
 ## How safe mode works
 
 On start, every 60 seconds, and whenever the window gets focus, the app reads

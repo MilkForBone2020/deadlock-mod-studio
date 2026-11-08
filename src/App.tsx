@@ -5,13 +5,15 @@ import { api, errorText, isTauri } from "./api";
 import type { Action, Overview } from "./types";
 import { LibraryView } from "./LibraryView";
 import { ActivityView, ProfilesView, SettingsView } from "./OtherViews";
+import { AUDIO_EXTS, SoundBuilderView } from "./SoundBuilder";
 import { Icon, Modal, Toasts, type Toast } from "./ui";
 import { useUpdater, type Updater } from "./updater";
 
-type View = "library" | "profiles" | "activity" | "settings";
+type View = "library" | "sounds" | "profiles" | "activity" | "settings";
 
 const NAV: { id: View; label: string; icon: string }[] = [
   { id: "library", label: "Library", icon: "library" },
+  { id: "sounds", label: "Sound Builder", icon: "wave" },
   { id: "profiles", label: "Profiles", icon: "profiles" },
   { id: "activity", label: "Activity", icon: "activity" },
   { id: "settings", label: "Settings", icon: "settings" },
@@ -29,6 +31,9 @@ export default function App() {
   const [logKey, setLogKey] = useState(0);
   const toastId = useRef(0);
   const updater = useUpdater();
+  const soundDrop = useRef<((paths: string[]) => void) | null>(null);
+  const viewRef = useRef<View>("library");
+  viewRef.current = view;
 
   const toast = useCallback((kind: Toast["kind"], text: string) => {
     setToasts((t) => [...t.slice(-3), { id: ++toastId.current, kind, text }]);
@@ -67,8 +72,13 @@ export default function App() {
   const importPaths = useCallback(
     async (paths: string[]) => {
       const vpks = paths.filter((p) => p.toLowerCase().endsWith(".vpk"));
+      const audio = paths.filter((p) => AUDIO_EXTS.includes(p.split(".").pop()?.toLowerCase() ?? ""));
+      if (audio.length && viewRef.current === "sounds" && soundDrop.current) {
+        soundDrop.current(audio);
+        if (!vpks.length) return;
+      }
       if (vpks.length === 0) {
-        toast("error", "Only .vpk files can be imported");
+        toast("error", audio.length ? "Open Sound Builder to use audio files" : "Only .vpk and audio files can be dropped here");
         return;
       }
       await act(async () => {
@@ -214,8 +224,12 @@ export default function App() {
           <div className="banner warn" role="status">
             <Icon name="warn" size={20} />
             <div>
-              <strong>Mods aren't loading</strong>
-              <p>Steam put back Valve's gameinfo.gi (an update or "Verify integrity"). Apply to add the addons_studio line again.</p>
+              <strong>Your mods aren't loading</strong>
+              <p>
+                gameinfo.gi lost the addons_studio line. That happens after a Steam update or "Verify integrity", or when
+                Deadlock Mod Manager rewrites the file as it launches. Apply to add it back, then start the game from
+                Steam or this app.
+              </p>
             </div>
           </div>
         )}
@@ -233,6 +247,17 @@ export default function App() {
         <div className="view">
           {view === "library" && (
             <LibraryView ov={ov} act={act} selectedId={selectedId} select={setSelectedId} onImport={pickImport} />
+          )}
+          {view === "sounds" && (
+            <SoundBuilderView
+              ov={ov}
+              act={act}
+              dropRef={soundDrop}
+              goTo={(v, modId) => {
+                setView(v);
+                if (modId) setSelectedId(modId);
+              }}
+            />
           )}
           {view === "profiles" && <ProfilesView ov={ov} act={act} />}
           {view === "activity" && <ActivityView act={act} refreshKey={logKey} />}

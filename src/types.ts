@@ -64,12 +64,62 @@ export interface GameStatus {
 export interface Overview {
   mods: ModEntry[];
   profiles: Profile[];
-  settings: { gameDir: string | null };
+  settings: { gameDir: string | null; csdkDir: string | null };
   safeMode: SafeModeEvent | null;
   game: GameStatus;
   plan: Plan;
   conflicts: Conflict[];
   dataDir: string;
+  soundProjects: SoundProject[];
+  csdkFound: boolean;
+}
+
+export interface SoundJob {
+  target: string;
+  source: string;
+}
+
+export interface SoundProject {
+  id: string;
+  name: string;
+  hero: string;
+  items: SoundJob[];
+  modId: string | null;
+  lastBuilt: string | null;
+}
+
+export interface GameSound {
+  path: string;
+  size: number;
+  looped: boolean;
+}
+
+export interface SoundSearch {
+  total: number;
+  results: GameSound[];
+}
+
+export interface Level {
+  loudnessDb: number;
+  peakDb: number;
+  durationSecs: number;
+  channels: number;
+  rate: number;
+}
+
+export interface ItemReport {
+  target: string;
+  original: Level;
+  yours: Level;
+  gainDb: number;
+  looped: boolean;
+  convertedChannels: boolean;
+}
+
+export interface BuildResult {
+  report: { items: ItemReport[]; vpk: string; vpkSize: number; log: string };
+  modId: string;
+  modName: string;
 }
 
 export interface ApplyReport {

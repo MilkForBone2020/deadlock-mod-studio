@@ -81,6 +81,26 @@ pub struct SafeModeEvent {
 #[serde(rename_all = "camelCase")]
 pub struct Settings {
     pub game_dir: Option<String>,
+    #[serde(default)]
+    pub csdk_dir: Option<String>,
+}
+
+/// A sound mod being made in the app: which game sounds it replaces, with
+/// which of my files. Building it produces (or updates) a library mod.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct SoundProject {
+    pub id: String,
+    pub name: String,
+    #[serde(default)]
+    pub hero: String,
+    #[serde(default)]
+    pub items: Vec<crate::csdk::SoundJob>,
+    /// The library mod this project builds into, once built.
+    #[serde(default)]
+    pub mod_id: Option<String>,
+    #[serde(default)]
+    pub last_built: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -100,6 +120,8 @@ pub struct State {
     pub last_build_id: Option<String>,
     #[serde(default)]
     pub safe_mode: Option<SafeModeEvent>,
+    #[serde(default)]
+    pub sound_projects: Vec<SoundProject>,
 }
 
 impl Default for State {
@@ -112,6 +134,7 @@ impl Default for State {
             managed: Vec::new(),
             last_build_id: None,
             safe_mode: None,
+            sound_projects: Vec::new(),
         }
     }
 }
@@ -479,6 +502,113 @@ impl Library {
         }
     }
 
+    // ----- Sound projects -----
+
+    pub fn project(&self, id: &str) -> Result<&SoundProject> {
+        self.state
+            .sound_projects
+            .iter()
+            .find(|p| p.id == id)
+            .ok_or_else(|| Error::msg("That sound project no longer exists"))
+    }
+
+    fn project_mut(&mut self, id: &str) -> Result<&mut SoundProject> {
+        self.state
+            .sound_projects
+            .iter_mut()
+            .find(|p| p.id == id)
+            .ok_or_else(|| Error::msg("That sound project no longer exists"))
+    }
+
+    pub fn create_project(&mut self, name: &str, hero: &str) -> Result<SoundProject> {
+        let name = name.trim();
+        if name.is_empty() {
+            return Err(Error::msg("Give the sound mod a name"));
+        }
+        let p = SoundProject {
+            id: uuid::Uuid::new_v4().simple().to_string()[..12].to_string(),
+            name: name.to_string(),
+            hero: hero.trim().to_string(),
+            items: Vec::new(),
+            mod_id: None,
+            last_built: None,
+        };
+        self.state.sound_projects.push(p.clone());
+        self.save()?;
+        Ok(p)
+    }
+
+    pub fn update_project(&mut self, id: &str, name: Option<String>, hero: Option<String>) -> Result<()> {
+        let p = self.project_mut(id)?;
+        if let Some(n) = name.filter(|n| !n.trim().is_empty()) {
+            p.name = n.trim().to_string();
+        }
+        if let Some(h) = hero {
+            p.hero = h.trim().to_string();
+        }
+        self.save()
+    }
+
+    /// Delete a project. Its built mod stays in the library.
+    pub fn delete_project(&mut self, id: &str) -> Result<()> {
+        self.state.sound_projects.retain(|p| p.id != id);
+        self.save()
+    }
+
+    /// Add or update a replacement. One entry per game sound.
+    pub fn set_project_item(&mut self, id: &str, target: &str, source: &str) -> Result<()> {
+        let target = target.to_lowercase().replace('\\', "/");
+        let p = self.project_mut(id)?;
+        if let Some(it) = p.items.iter_mut().find(|i| i.target == target) {
+            it.source = source.to_string();
+        } else {
+            p.items.push(crate::csdk::SoundJob { target, source: source.to_string() });
+        }
+        self.save()
+    }
+
+    pub fn remove_project_item(&mut self, id: &str, target: &str) -> Result<()> {
+        self.project_mut(id)?.items.retain(|i| i.target != target);
+        self.save()
+    }
+
+    /// After a build: put the VPK in the library (new mod, or a new version
+    /// of the mod this project made before). Returns the mod id.
+    pub fn store_build(&mut self, project_id: &str, vpk_path: &Path) -> Result<String> {
+        let p = self.project(project_id)?.clone();
+        let existing = p.mod_id.clone().filter(|m| self.state.mods.iter().any(|x| &x.id == m));
+        let mod_id = match existing {
+            Some(m) => {
+                self.replace_vpk(&m, vpk_path)?;
+                let entry = self.get_mut(&m)?;
+                entry.name = p.name.clone();
+                entry.hero = p.hero.clone();
+                entry.kind = ModKind::Sound;
+                let v: u32 = entry.version.parse().unwrap_or(1);
+                entry.version = (v + 1).to_string();
+                m
+            }
+            None => {
+                self.import_vpk(
+                    vpk_path,
+                    ModMeta {
+                        name: Some(p.name.clone()),
+                        kind: Some(ModKind::Sound),
+                        hero: Some(p.hero.clone()),
+                        notes: Some("Built in Sound Builder".into()),
+                        version: Some("1".into()),
+                    },
+                )?
+                .id
+            }
+        };
+        let pm = self.project_mut(project_id)?;
+        pm.mod_id = Some(mod_id.clone());
+        pm.last_built = Some(now());
+        self.save()?;
+        Ok(mod_id)
+    }
+
     pub fn dismiss_safe_mode(&mut self) -> Result<()> {
         self.state.safe_mode = None;
         self.save()
@@ -631,6 +761,38 @@ mod tests {
         assert_eq!(m.verified_build, None);
         assert_ne!(m.stamp, stamp);
         assert_eq!(m.files.len(), 2);
+    }
+
+    #[test]
+    fn sound_project_builds_into_one_library_mod() {
+        let (t, mut lib) = lib_with(0);
+        let p = lib.create_project("Storm remix", "Seven").unwrap();
+        lib.set_project_item(&p.id, "Sounds/A/B_lp.vsnd_c", "C:/x.wav").unwrap();
+        lib.set_project_item(&p.id, "sounds/a/b_lp.vsnd_c", "C:/y.wav").unwrap();
+        assert_eq!(lib.project(&p.id).unwrap().items.len(), 1, "same target updates in place");
+        assert_eq!(lib.project(&p.id).unwrap().items[0].source, "C:/y.wav");
+
+        let v1 = write_vpk(t.path(), "b1.vpk", &["sounds/a/b_lp.vsnd_c"]);
+        let id = lib.store_build(&p.id, &v1).unwrap();
+        let m = lib.get(&id).unwrap().clone();
+        assert_eq!((m.name.as_str(), m.hero.as_str(), m.kind, m.version.as_str()), ("Storm remix", "Seven", ModKind::Sound, "1"));
+        lib.set_enabled(&id, true).unwrap();
+        lib.mark_verified(&id, Some("1".into())).unwrap();
+
+        let v2 = write_vpk(t.path(), "b2.vpk", &["sounds/a/b_lp.vsnd_c", "sounds/a/c.vsnd_c"]);
+        let id2 = lib.store_build(&p.id, &v2).unwrap();
+        assert_eq!(id, id2, "rebuild updates the same mod");
+        let m2 = lib.get(&id).unwrap();
+        assert_eq!(m2.version, "2");
+        assert!(m2.enabled, "stays on");
+        assert_eq!(m2.verified_build, None, "new build needs testing again");
+        assert_eq!(m2.files.len(), 2);
+        assert_eq!(lib.state.mods.len(), 1);
+
+        // If the mod was deleted, the next build makes a new one.
+        lib.remove_mod(&id).unwrap();
+        let id3 = lib.store_build(&p.id, &v2).unwrap();
+        assert_ne!(id3, id);
     }
 
     #[test]

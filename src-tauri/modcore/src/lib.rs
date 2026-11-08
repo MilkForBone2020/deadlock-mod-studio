@@ -3,6 +3,8 @@
 //! Nothing in here talks to the UI. Every function works on plain paths and
 //! data so it can be unit tested without Tauri or a real Deadlock install.
 
+pub mod audio;
+pub mod csdk;
 pub mod gameinfo;
 pub mod library;
 pub mod steam;

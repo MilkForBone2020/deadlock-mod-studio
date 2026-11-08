@@ -2,7 +2,7 @@
 // plain browser (`npm run dev`) so the design can be worked on without the
 // desktop app. Nothing here touches real files.
 
-import type { Action, ModEntry, Overview, Profile } from "./types";
+import type { Action, ModEntry, Overview, Profile, SoundProject } from "./types";
 import type { Api } from "./api";
 
 const BUILD = "20614033";
@@ -43,6 +43,25 @@ let mods: ModEntry[] = [
 ];
 let profiles: Profile[] = [{ id: "p1", name: "Full", mods: ["a1", "a2", "a3"] }];
 let applied: string[] = ["a1", "a2"];
+let projects: SoundProject[] = [
+  {
+    id: "sp1",
+    name: "Storm Cloud remix",
+    hero: "Seven",
+    items: [
+      { target: "sounds/abilities/gigawatt/gigawatt_storm_cloud_lp.vsnd_c", source: "D:\\Audio\\storm_loop_v3.wav" },
+      { target: "sounds/abilities/gigawatt/gigawatt_storm_cloud_cast.vsnd_c", source: "D:\\Audio\\thunder_cast.mp4" },
+      { target: "sounds/abilities/gigawatt/a4_storm_cloud/impact_1.vsnd_c", source: "" },
+    ],
+    modId: "a1",
+    lastBuilt: "2026-11-08T15:30:00+00:00",
+  },
+];
+const gameSounds = [
+  "a4_storm_cloud/end", "a4_storm_cloud/impact_1", "a4_storm_cloud/impact_2", "a4_storm_cloud/impact_3", "a4_storm_cloud/impact_4",
+  "gigawatt_storm_cloud_aoe_lp", "gigawatt_storm_cloud_bolt_cast", "gigawatt_storm_cloud_bolt_explo_01", "gigawatt_storm_cloud_cast",
+  "gigawatt_storm_cloud_end", "gigawatt_storm_cloud_lp", "gigawatt_power_surge_activate_lp", "gigawatt_static_charge_cast",
+].map((s) => `sounds/abilities/gigawatt/${s}.vsnd_c`);
 let log: string[] = [`${now().slice(0, 19)}+00:00  Imported "Seven Storm Cloud remix" (5 files inside)`];
 
 function plan() {
@@ -78,12 +97,14 @@ export const mockApi: Api = {
   overview: async (): Promise<Overview> => ({
     mods: structuredClone(mods),
     profiles: structuredClone(profiles),
-    settings: { gameDir: "D:\\Games\\SteamLibrary\\steamapps\\common\\Deadlock" },
+    settings: { gameDir: "D:\\Games\\SteamLibrary\\steamapps\\common\\Deadlock", csdkDir: "D:\\Desktop\\Reduced_CSDK_13" },
     safeMode: null,
     game: { dir: "D:\\Games\\SteamLibrary\\steamapps\\common\\Deadlock", found: true, buildId: BUILD, running: false, addonsLine: true, sharedAddonsLine: true },
     plan: plan(),
     conflicts: conflicts(),
     dataDir: "C:\\Users\\you\\AppData\\Roaming\\app.deadlockmodstudio.local",
+    soundProjects: structuredClone(projects),
+    csdkFound: true,
   }),
   checkForUpdate: async () => null,
   dismissSafeMode: ok,
@@ -135,4 +156,59 @@ export const mockApi: Api = {
   readLog: async () => log,
   openFolder: ok,
   launchGame: ok,
+  searchGameSounds: async (query) => {
+    const w = query.toLowerCase().split(/\s+/).filter(Boolean);
+    const r = gameSounds.filter((p) => w.every((x) => p.includes(x)));
+    return { total: r.length, results: r.map((path) => ({ path, size: 150000, looped: /_lp\./.test(path) })) };
+  },
+  audioLevel: async (kind, path) => ({
+    loudnessDb: kind === "game" ? -15.8 : path.includes("mp4") ? -9.1 : -16.4,
+    peakDb: kind === "game" ? -0.6 : -0.2,
+    durationSecs: path.includes("_lp") || path.includes("loop") ? 18.02 : 5.56,
+    channels: 2,
+    rate: 44100,
+  }),
+  audioBytes: async () => new ArrayBuffer(0),
+  detectCsdk: async () => "D:\\Desktop\\Reduced_CSDK_13",
+  setCsdkDir: ok,
+  createSoundProject: async (name, hero) => {
+    const p = { id: String(Date.now()), name, hero, items: [], modId: null, lastBuilt: null };
+    projects = [...projects, p];
+    return p;
+  },
+  updateSoundProject: async (id, name, hero) => {
+    projects = projects.map((p) => (p.id === id ? { ...p, name: name ?? p.name, hero: hero ?? p.hero } : p));
+  },
+  deleteSoundProject: async (id) => {
+    projects = projects.filter((p) => p.id !== id);
+  },
+  setProjectItem: async (id, target, source) => {
+    projects = projects.map((p) =>
+      p.id !== id ? p : { ...p, items: p.items.some((i) => i.target === target) ? p.items.map((i) => (i.target === target ? { target, source } : i)) : [...p.items, { target, source }] },
+    );
+  },
+  removeProjectItem: async (id, target) => {
+    projects = projects.map((p) => (p.id === id ? { ...p, items: p.items.filter((i) => i.target !== target) } : p));
+  },
+  buildSoundProject: async (id) => {
+    await new Promise((r) => setTimeout(r, 600));
+    const p = projects.find((x) => x.id === id)!;
+    return {
+      modId: "a1",
+      modName: p.name,
+      report: {
+        vpk: "x.vpk",
+        vpkSize: 2_400_000,
+        log: "OK: 1 compiled, 0 failed, 0 skipped",
+        items: p.items.map((i, k) => ({
+          target: i.target,
+          original: { loudnessDb: -15.8, peakDb: -0.6, durationSecs: 18, channels: 2, rate: 44100 },
+          yours: { loudnessDb: k === 1 ? -9.1 : -16.4, peakDb: -0.2, durationSecs: 18, channels: k === 1 ? 1 : 2, rate: 48000 },
+          gainDb: k === 1 ? -6.7 : 0,
+          looped: i.target.includes("_lp"),
+          convertedChannels: k === 1,
+        })),
+      },
+    };
+  },
 };

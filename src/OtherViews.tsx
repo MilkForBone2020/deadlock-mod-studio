@@ -178,6 +178,8 @@ export function SettingsView({ ov, act, updater }: { ov: Overview; act: Act; upd
         </div>
       </section>
 
+      <CsdkCard ov={ov} act={act} />
+
       <section className="card">
         <h2>App updates</h2>
         <p className="hint">
@@ -250,5 +252,48 @@ export function SettingsView({ ov, act, updater }: { ov: Overview; act: Act; upd
         App data: <code>{ov.dataDir}</code>
       </p>
     </div>
+  );
+}
+
+function CsdkCard({ ov, act }: { ov: Overview; act: Act }) {
+  const [dir, setDir] = useState(ov.settings.csdkDir ?? "");
+  useEffect(() => setDir(ov.settings.csdkDir ?? ""), [ov.settings.csdkDir]);
+  return (
+    <section className="card">
+      <h2>CSDK 13</h2>
+      <p className="hint">
+        Sound Builder uses CSDK's compiler to turn your audio into game sounds. Point this at the folder that contains{" "}
+        <code>csdkcfg.exe</code>. Steam needs to be running when you build.
+      </p>
+      <div className="path-row">
+        <input value={dir} onChange={(e) => setDir(e.target.value)} aria-label="CSDK folder" spellCheck={false} placeholder="e.g. D:\\Desktop\\Reduced_CSDK_13" />
+        <button
+          className="btn ghost"
+          onClick={async () => {
+            const picked = await open({ directory: true, multiple: false, defaultPath: dir || undefined });
+            if (typeof picked === "string") setDir(picked);
+          }}
+        >
+          Browse…
+        </button>
+        <button
+          className="btn ghost"
+          onClick={async () => {
+            const found = await api.detectCsdk();
+            if (found) setDir(found);
+            else await act(() => Promise.reject("Couldn't find CSDK automatically. Browse to the Reduced_CSDK_13 folder."));
+          }}
+        >
+          Detect
+        </button>
+        <button className="btn primary" disabled={!dir.trim() || dir === ov.settings.csdkDir} onClick={() => act(() => api.setCsdkDir(dir), "CSDK folder saved")}>
+          Save
+        </button>
+      </div>
+      <dl className="facts-grid">
+        <dt>Status</dt>
+        <dd>{ov.csdkFound ? "Found the compiler" : ov.settings.csdkDir ? "Compiler not found in that folder" : "Not set"}</dd>
+      </dl>
+    </section>
   );
 }

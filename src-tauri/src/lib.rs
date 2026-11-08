@@ -1,17 +1,23 @@
 //! Tauri commands. All file logic lives in `modcore`; this layer adds the
 //! game-running guard, picks the data folder and talks to the UI.
 
-use modcore::library::{BuildCheck, Library, ModEntry, ModMeta, Profile, SafeModeEvent, Settings};
+use modcore::audio::{self, Level};
+use modcore::csdk::{self, BuildReport};
+use modcore::library::{BuildCheck, Library, ModEntry, ModMeta, Profile, SafeModeEvent, Settings, SoundProject};
+use modcore::vpk::Directory;
 use modcore::sync::{self, ApplyReport, Plan};
 use modcore::{steam, Error};
 use serde::Serialize;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
-use tauri::{Manager, State};
+use std::sync::{Arc, Mutex};
+use std::time::SystemTime;
+use tauri::{Emitter, Manager, State};
 use tauri_plugin_opener::OpenerExt;
 
 struct App {
     lib: Mutex<Library>,
+    /// Deadlock's pak01 directory, cached until the file changes.
+    game_index: Mutex<Option<(PathBuf, SystemTime, Arc<Directory>)>>,
 }
 
 type CmdResult<T> = Result<T, String>;
@@ -44,6 +50,8 @@ struct Overview {
     plan: Plan,
     conflicts: Vec<modcore::library::Conflict>,
     data_dir: String,
+    sound_projects: Vec<SoundProject>,
+    csdk_found: bool,
 }
 
 /// Is Deadlock (project8.exe) running right now?
@@ -107,6 +115,8 @@ fn overview_of(lib: &Library) -> CmdResult<Overview> {
         plan,
         conflicts: lib.conflicts(),
         data_dir: lib.root.display().to_string(),
+        sound_projects: lib.state.sound_projects.clone(),
+        csdk_found: lib.state.settings.csdk_dir.as_deref().map(|d| csdk::is_csdk_dir(Path::new(d))).unwrap_or(false),
     })
 }
 
@@ -287,6 +297,212 @@ fn launch_game(app_handle: tauri::AppHandle) -> CmdResult<()> {
         .map_err(|e| e.to_string())
 }
 
+// ---------- Game sounds ----------
+
+fn steam_running() -> bool {
+    use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System};
+    let mut sys = System::new();
+    sys.refresh_processes_specifics(ProcessesToUpdate::All, true, ProcessRefreshKind::nothing());
+    sys.processes().values().any(|p| {
+        let n = p.name().to_string_lossy().to_ascii_lowercase();
+        n == "steam.exe" || n == "steam"
+    })
+}
+
+fn game_index(app: &App) -> CmdResult<Arc<Directory>> {
+    let dir = {
+        let lib = app.lib.lock().unwrap();
+        require_game_dir(&lib)?
+    };
+    let pak = steam::citadel_dir(&dir).join("pak01_dir.vpk");
+    let mtime = std::fs::metadata(&pak)
+        .and_then(|m| m.modified())
+        .map_err(|_| format!("Can't read {}", pak.display()))?;
+    let mut cache = app.game_index.lock().unwrap();
+    if let Some((p, t, d)) = cache.as_ref() {
+        if *p == pak && *t == mtime {
+            return Ok(d.clone());
+        }
+    }
+    let d = Arc::new(modcore::vpk::read_directory(&pak).map_err(err)?);
+    *cache = Some((pak, mtime, d.clone()));
+    Ok(d)
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GameSound {
+    path: String,
+    size: u64,
+    looped: bool,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SoundSearch {
+    total: usize,
+    results: Vec<GameSound>,
+}
+
+/// Every word in `query` must appear in the path. Max `limit` results.
+#[tauri::command]
+async fn search_game_sounds(app: State<'_, App>, query: String, limit: usize) -> CmdResult<SoundSearch> {
+    let d = game_index(&app)?;
+    let words: Vec<String> = query
+        .to_lowercase()
+        .split(|c: char| c.is_whitespace() || c == '/' || c == '\\')
+        .filter(|w| !w.is_empty())
+        .map(|w| w.to_string())
+        .collect();
+    let mut total = 0;
+    let mut results = Vec::new();
+    for e in d.entries.iter().filter(|e| e.path.starts_with("sounds/") && e.path.ends_with(".vsnd_c")) {
+        if words.iter().all(|w| e.path.contains(w.as_str())) {
+            total += 1;
+            if results.len() < limit.min(500) {
+                results.push(GameSound { path: e.path.clone(), size: e.size(), looped: csdk::is_loop(&e.path) });
+            }
+        }
+    }
+    Ok(SoundSearch { total, results })
+}
+
+fn game_sound_bytes(app: &App, path: &str) -> CmdResult<Vec<u8>> {
+    let d = game_index(app)?;
+    let e = d.find(path).ok_or_else(|| format!("{path} isn't in the game's files"))?;
+    d.extract(e).map_err(err)
+}
+
+/// Loudness, peak, length and format of a game sound or one of my files.
+#[tauri::command]
+async fn audio_level(app: State<'_, App>, kind: String, path: String) -> CmdResult<Level> {
+    let pcm = if kind == "game" {
+        let bytes = game_sound_bytes(&app, &path)?;
+        tauri::async_runtime::spawn_blocking(move || audio::decode_vsnd(&bytes))
+            .await
+            .map_err(|e| e.to_string())?
+    } else {
+        let p = PathBuf::from(&path);
+        tauri::async_runtime::spawn_blocking(move || audio::decode_file(&p))
+            .await
+            .map_err(|e| e.to_string())?
+    }
+    .map_err(err)?;
+    Ok(audio::measure(&pcm))
+}
+
+/// Raw audio bytes for playback in the app (the original inside a game
+/// sound, or one of my files as-is).
+#[tauri::command]
+async fn audio_bytes(app: State<'_, App>, kind: String, path: String) -> CmdResult<tauri::ipc::Response> {
+    let bytes = if kind == "game" {
+        let v = game_sound_bytes(&app, &path)?;
+        audio::vsnd_audio(&v).map_err(err)?.to_vec()
+    } else {
+        std::fs::read(&path).map_err(|e| format!("{path}: {e}"))?
+    };
+    Ok(tauri::ipc::Response::new(bytes))
+}
+
+// ---------- CSDK + sound projects ----------
+
+#[tauri::command]
+fn detect_csdk() -> Option<String> {
+    csdk::detect().map(|p| p.display().to_string())
+}
+
+#[tauri::command]
+fn set_csdk_dir(app: State<App>, path: String) -> CmdResult<()> {
+    let p = PathBuf::from(path.trim());
+    if !csdk::is_csdk_dir(&p) {
+        return Err(format!(
+            "{} doesn't look like CSDK: game\\bin\\win64\\resourcecompiler.exe wasn't found",
+            p.display()
+        ));
+    }
+    let mut lib = app.lib.lock().unwrap();
+    lib.state.settings.csdk_dir = Some(p.display().to_string());
+    lib.log(&format!("CSDK folder set to {}", p.display()));
+    lib.save().map_err(err)
+}
+
+#[tauri::command]
+fn create_sound_project(app: State<App>, name: String, hero: String) -> CmdResult<SoundProject> {
+    app.lib.lock().unwrap().create_project(&name, &hero).map_err(err)
+}
+
+#[tauri::command]
+fn update_sound_project(app: State<App>, id: String, name: Option<String>, hero: Option<String>) -> CmdResult<()> {
+    app.lib.lock().unwrap().update_project(&id, name, hero).map_err(err)
+}
+
+#[tauri::command]
+fn delete_sound_project(app: State<App>, id: String) -> CmdResult<()> {
+    app.lib.lock().unwrap().delete_project(&id).map_err(err)
+}
+
+#[tauri::command]
+fn set_project_item(app: State<App>, id: String, target: String, source: String) -> CmdResult<()> {
+    app.lib.lock().unwrap().set_project_item(&id, &target, &source).map_err(err)
+}
+
+#[tauri::command]
+fn remove_project_item(app: State<App>, id: String, target: String) -> CmdResult<()> {
+    app.lib.lock().unwrap().remove_project_item(&id, &target).map_err(err)
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BuildResult {
+    report: BuildReport,
+    mod_id: String,
+    mod_name: String,
+}
+
+/// Convert, volume-match, compile and pack a sound project, then put the
+/// result in the library. Progress goes out as `build-progress` events.
+#[tauri::command]
+async fn build_sound_project(app_handle: tauri::AppHandle, app: State<'_, App>, id: String) -> CmdResult<BuildResult> {
+    let (project, csdk_dir, game_dir, out) = {
+        let lib = app.lib.lock().unwrap();
+        let p = lib.project(&id).map_err(err)?.clone();
+        let c = lib
+            .state
+            .settings
+            .csdk_dir
+            .clone()
+            .ok_or("Set the CSDK folder in Settings first")?;
+        let g = require_game_dir(&lib)?;
+        let out = lib.root.join("builds").join(format!("{}.vpk", p.id));
+        (p, PathBuf::from(c), g, out)
+    };
+    if !steam_running() {
+        return Err("Start Steam first: CSDK's compiler needs it running.".into());
+    }
+    let slug = format!("{}_{}", project.name, &project.id[..4]);
+    let jobs = project.items.clone();
+    let h = app_handle.clone();
+    let report = tauri::async_runtime::spawn_blocking(move || {
+        csdk::build_sound_mod(&csdk_dir, &game_dir, &slug, &jobs, &out, &csdk::run_compiler, &|m| {
+            let _ = h.emit("build-progress", m.to_string());
+        })
+    })
+    .await
+    .map_err(|e| e.to_string())?
+    .map_err(err)?;
+
+    let mut lib = app.lib.lock().unwrap();
+    let mod_id = lib.store_build(&id, Path::new(&report.vpk)).map_err(err)?;
+    let mod_name = lib.get(&mod_id).map(|m| m.name.clone()).unwrap_or_default();
+    lib.log(&format!(
+        "Built sound mod \"{}\": {} sound(s), {} turned down to match the originals",
+        mod_name,
+        report.items.len(),
+        report.items.iter().filter(|i| i.gain_db < 0.0).count()
+    ));
+    Ok(BuildResult { report, mod_id, mod_name })
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -304,7 +520,14 @@ pub fn run() {
                     lib.save()?;
                 }
             }
-            app.manage(App { lib: Mutex::new(lib) });
+            if lib.state.settings.csdk_dir.is_none() {
+                if let Some(found) = csdk::detect() {
+                    lib.state.settings.csdk_dir = Some(found.display().to_string());
+                    lib.log(&format!("Found CSDK at {}", found.display()));
+                    lib.save()?;
+                }
+            }
+            app.manage(App { lib: Mutex::new(lib), game_index: Mutex::new(None) });
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -329,6 +552,17 @@ pub fn run() {
             read_log,
             open_folder,
             launch_game,
+            search_game_sounds,
+            audio_level,
+            audio_bytes,
+            detect_csdk,
+            set_csdk_dir,
+            create_sound_project,
+            update_sound_project,
+            delete_sound_project,
+            set_project_item,
+            remove_project_item,
+            build_sound_project,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Deadlock Mod Studio");

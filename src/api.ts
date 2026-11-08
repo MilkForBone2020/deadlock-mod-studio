@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { ApplyReport, ModMeta, Overview, Profile, SafeModeEvent } from "./types";
+import type { ApplyReport, BuildResult, Level, ModMeta, Overview, Profile, SafeModeEvent, SoundProject, SoundSearch } from "./types";
 import { mockApi } from "./mock";
 
 /** False when the UI is opened in a plain browser (`npm run dev`) for design work. */
@@ -29,6 +29,17 @@ const tauriApi = {
   openFolder: (which: "library" | "backups" | "logs" | "addons" | "game") =>
     invoke<void>("open_folder", { which }),
   launchGame: () => invoke<void>("launch_game"),
+  searchGameSounds: (query: string, limit = 200) => invoke<SoundSearch>("search_game_sounds", { query, limit }),
+  audioLevel: (kind: "game" | "file", path: string) => invoke<Level>("audio_level", { kind, path }),
+  audioBytes: (kind: "game" | "file", path: string) => invoke<ArrayBuffer>("audio_bytes", { kind, path }),
+  detectCsdk: () => invoke<string | null>("detect_csdk"),
+  setCsdkDir: (path: string) => invoke<void>("set_csdk_dir", { path }),
+  createSoundProject: (name: string, hero: string) => invoke<SoundProject>("create_sound_project", { name, hero }),
+  updateSoundProject: (id: string, name?: string, hero?: string) => invoke<void>("update_sound_project", { id, name, hero }),
+  deleteSoundProject: (id: string) => invoke<void>("delete_sound_project", { id }),
+  setProjectItem: (id: string, target: string, source: string) => invoke<void>("set_project_item", { id, target, source }),
+  removeProjectItem: (id: string, target: string) => invoke<void>("remove_project_item", { id, target }),
+  buildSoundProject: (id: string) => invoke<BuildResult>("build_sound_project", { id }),
 };
 
 export type Api = typeof tauriApi;
