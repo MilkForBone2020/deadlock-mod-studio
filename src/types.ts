@@ -77,6 +77,35 @@ export interface Overview {
 export interface SoundJob {
   target: string;
   source: string;
+  volumeDb: number;
+}
+
+export interface VoiceMute {
+  hero: string;
+  slot: number;
+}
+
+export interface SoundUse {
+  hero: string;
+  heroName: string;
+  category: string;
+  slot: number | null;
+  abilityName: string | null;
+  part: string;
+  event: string;
+}
+
+export interface AbilityInfo {
+  slot: number;
+  key: string;
+  name: string;
+  voiceLines: number;
+}
+
+export interface HeroInfo {
+  code: string;
+  name: string;
+  abilities: AbilityInfo[];
 }
 
 export interface SoundProject {
@@ -84,6 +113,7 @@ export interface SoundProject {
   name: string;
   hero: string;
   items: SoundJob[];
+  muteVoice: VoiceMute[];
   modId: string | null;
   lastBuilt: string | null;
 }
@@ -92,6 +122,7 @@ export interface GameSound {
   path: string;
   size: number;
   looped: boolean;
+  uses: SoundUse[];
 }
 
 export interface SoundSearch {
@@ -111,13 +142,16 @@ export interface ItemReport {
   target: string;
   original: Level;
   yours: Level;
+  result: Level;
   gainDb: number;
+  volumeDb: number;
+  limited: boolean;
   looped: boolean;
   convertedChannels: boolean;
 }
 
 export interface BuildResult {
-  report: { items: ItemReport[]; vpk: string; vpkSize: number; log: string };
+  report: { items: ItemReport[]; vpk: string; vpkSize: number; log: string; muted: number };
   modId: string;
   modName: string;
 }

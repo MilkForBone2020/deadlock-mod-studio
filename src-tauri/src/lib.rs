@@ -2,6 +2,7 @@
 //! game-running guard, picks the data folder and talks to the UI.
 
 use modcore::audio::{self, Level};
+use modcore::catalog::{self, Catalog, HeroInfo, SoundUse};
 use modcore::csdk::{self, BuildReport};
 use modcore::library::{BuildCheck, Library, ModEntry, ModMeta, Profile, SafeModeEvent, Settings, SoundProject};
 use modcore::vpk::Directory;
@@ -18,6 +19,9 @@ struct App {
     lib: Mutex<Library>,
     /// Deadlock's pak01 directory, cached until the file changes.
     game_index: Mutex<Option<(PathBuf, SystemTime, Arc<Directory>)>>,
+    /// Sound catalogue (who/which ability each sound belongs to), cached
+    /// per pak01 version.
+    catalog: Mutex<Option<(SystemTime, Arc<Catalog>)>>,
 }
 
 type CmdResult<T> = Result<T, String>;
@@ -335,6 +339,50 @@ struct GameSound {
     path: String,
     size: u64,
     looped: bool,
+    uses: Vec<SoundUse>,
+}
+
+fn pak_mtime(app: &App) -> CmdResult<SystemTime> {
+    let dir = {
+        let lib = app.lib.lock().unwrap();
+        require_game_dir(&lib)?
+    };
+    std::fs::metadata(steam::citadel_dir(&dir).join("pak01_dir.vpk"))
+        .and_then(|m| m.modified())
+        .map_err(|e| e.to_string())
+}
+
+/// Build (once per game version) and return the sound catalogue.
+async fn catalog_of(app: &App) -> CmdResult<Arc<Catalog>> {
+    let mtime = pak_mtime(app)?;
+    if let Some((t, c)) = app.catalog.lock().unwrap().as_ref() {
+        if *t == mtime {
+            return Ok(c.clone());
+        }
+    }
+    let d = game_index(app)?;
+    let loc = {
+        let lib = app.lib.lock().unwrap();
+        require_game_dir(&lib)?.join("game").join("citadel").join("resource").join("localization")
+    };
+    let c = tauri::async_runtime::spawn_blocking(move || Arc::new(Catalog::build(&d, Some(&loc))))
+        .await
+        .map_err(|e| e.to_string())?;
+    *app.catalog.lock().unwrap() = Some((mtime, c.clone()));
+    Ok(c)
+}
+
+/// Heroes with their abilities (by slot) and voice-line counts.
+#[tauri::command]
+async fn sound_heroes(app: State<'_, App>) -> CmdResult<Vec<HeroInfo>> {
+    Ok(catalog_of(&app).await?.heroes.clone())
+}
+
+/// Where each of these game sounds is used.
+#[tauri::command]
+async fn describe_sounds(app: State<'_, App>, paths: Vec<String>) -> CmdResult<std::collections::HashMap<String, Vec<SoundUse>>> {
+    let c = catalog_of(&app).await?;
+    Ok(paths.into_iter().map(|p| { let u = c.uses_of(&p).to_vec(); (p, u) }).collect())
 }
 
 #[derive(Serialize)]
@@ -344,10 +392,19 @@ struct SoundSearch {
     results: Vec<GameSound>,
 }
 
-/// Every word in `query` must appear in the path. Max `limit` results.
+/// Every word in `query` must appear in the path or in what the sound is
+/// used for (hero, ability, part, event). Optional filters: a hero code and
+/// a group (`slot:1`..`slot:4`, or a category such as `Weapon`).
 #[tauri::command]
-async fn search_game_sounds(app: State<'_, App>, query: String, limit: usize) -> CmdResult<SoundSearch> {
+async fn search_game_sounds(
+    app: State<'_, App>,
+    query: String,
+    hero: Option<String>,
+    group: Option<String>,
+    limit: usize,
+) -> CmdResult<SoundSearch> {
     let d = game_index(&app)?;
+    let cat = catalog_of(&app).await?;
     let words: Vec<String> = query
         .to_lowercase()
         .split(|c: char| c.is_whitespace() || c == '/' || c == '\\')
@@ -356,11 +413,40 @@ async fn search_game_sounds(app: State<'_, App>, query: String, limit: usize) ->
         .collect();
     let mut total = 0;
     let mut results = Vec::new();
+    let hero = hero.filter(|h| !h.is_empty());
+    let group = group.filter(|g| !g.is_empty());
     for e in d.entries.iter().filter(|e| e.path.starts_with("sounds/") && e.path.ends_with(".vsnd_c")) {
-        if words.iter().all(|w| e.path.contains(w.as_str())) {
+        let uses = cat.uses_of(&e.path);
+        if let Some(h) = &hero {
+            if !uses.iter().any(|u| &u.hero == h) {
+                continue;
+            }
+        }
+        if let Some(g) = &group {
+            let ok = uses.iter().any(|u| {
+                hero.as_ref().is_none_or(|h| &u.hero == h)
+                    && match g.strip_prefix("slot:") {
+                        Some(n) => u.slot.map(|s| s.to_string()) == Some(n.to_string()) && u.category != "Voice",
+                        None => &u.category == g,
+                    }
+            });
+            if !ok {
+                continue;
+            }
+        }
+        let haystack = || {
+            let mut h = e.path.clone();
+            for u in uses {
+                h.push(' ');
+                h.push_str(&format!("{} {} {} {} {}", u.hero_name, u.ability_name.clone().unwrap_or_default(), u.part, u.event, u.category).to_lowercase());
+            }
+            h
+        };
+        let hs = if words.is_empty() { String::new() } else { haystack() };
+        if words.iter().all(|w| hs.contains(w.as_str())) {
             total += 1;
             if results.len() < limit.min(500) {
-                results.push(GameSound { path: e.path.clone(), size: e.size(), looped: csdk::is_loop(&e.path) });
+                results.push(GameSound { path: e.path.clone(), size: e.size(), looped: csdk::is_loop(&e.path), uses: uses.to_vec() });
             }
         }
     }
@@ -447,6 +533,16 @@ fn set_project_item(app: State<App>, id: String, target: String, source: String)
 }
 
 #[tauri::command]
+fn set_item_volume(app: State<App>, id: String, target: String, volume_db: f64) -> CmdResult<()> {
+    app.lib.lock().unwrap().set_item_volume(&id, &target, volume_db).map_err(err)
+}
+
+#[tauri::command]
+fn set_voice_mute(app: State<App>, id: String, hero: String, slot: u8, on: bool) -> CmdResult<()> {
+    app.lib.lock().unwrap().set_voice_mute(&id, &hero, slot, on).map_err(err)
+}
+
+#[tauri::command]
 fn remove_project_item(app: State<App>, id: String, target: String) -> CmdResult<()> {
     app.lib.lock().unwrap().remove_project_item(&id, &target).map_err(err)
 }
@@ -486,9 +582,13 @@ async fn build_sound_project(app_handle: tauri::AppHandle, app: State<'_, App>, 
     }
     let slug = format!("{}_{}", project.name, &project.id[..4]);
     let jobs = project.items.clone();
+    let mutes: Vec<String> = {
+        let d = game_index(&app)?;
+        project.mute_voice.iter().flat_map(|m| catalog::voice_lines(&d, &m.hero, m.slot)).collect()
+    };
     let h = app_handle.clone();
     let report = tauri::async_runtime::spawn_blocking(move || {
-        csdk::build_sound_mod(&csdk_dir, &game_dir, &slug, &jobs, &out, &csdk::run_compiler, &|m| {
+        csdk::build_sound_mod(&csdk_dir, &game_dir, &slug, &jobs, &mutes, &out, &csdk::run_compiler, &|m| {
             let _ = h.emit("build-progress", m.to_string());
         })
     })
@@ -500,10 +600,10 @@ async fn build_sound_project(app_handle: tauri::AppHandle, app: State<'_, App>, 
     let mod_id = lib.store_build(&id, Path::new(&report.vpk)).map_err(err)?;
     let mod_name = lib.get(&mod_id).map(|m| m.name.clone()).unwrap_or_default();
     lib.log(&format!(
-        "Built sound mod \"{}\": {} sound(s), {} turned down to match the originals",
+        "Built sound mod \"{}\": {} sound(s), {} voice line(s) muted",
         mod_name,
         report.items.len(),
-        report.items.iter().filter(|i| i.gain_db < 0.0).count()
+        report.muted
     ));
     Ok(BuildResult { report, mod_id, mod_name })
 }
@@ -532,7 +632,7 @@ pub fn run() {
                     lib.save()?;
                 }
             }
-            app.manage(App { lib: Mutex::new(lib), game_index: Mutex::new(None) });
+            app.manage(App { lib: Mutex::new(lib), game_index: Mutex::new(None), catalog: Mutex::new(None) });
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -568,6 +668,10 @@ pub fn run() {
             set_project_item,
             remove_project_item,
             build_sound_project,
+            set_item_volume,
+            set_voice_mute,
+            sound_heroes,
+            describe_sounds,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Deadlock Mod Studio");

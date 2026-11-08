@@ -66,6 +66,10 @@ pub struct SoundJob {
     pub target: String,
     /// My replacement file (MP3, WAV, MP4, M4A, OGG, FLAC).
     pub source: String,
+    /// Volume relative to the original's loudness, in dB. 0 = same as the
+    /// original; capped at audio::MAX_BOOST_DB.
+    #[serde(default)]
+    pub volume_db: f64,
 }
 
 #[derive(Serialize, Clone, Debug)]
@@ -74,8 +78,13 @@ pub struct ItemReport {
     pub target: String,
     pub original: Level,
     pub yours: Level,
-    /// Applied gain, always <= 0.
+    /// The level after processing (what plays in game).
+    pub result: Level,
+    /// Gain applied to my file.
     pub gain_db: f64,
+    /// Requested volume relative to the original (after the cap).
+    pub volume_db: f64,
+    pub limited: bool,
     pub looped: bool,
     pub converted_channels: bool,
 }
@@ -87,6 +96,8 @@ pub struct BuildReport {
     pub vpk: String,
     pub vpk_size: u64,
     pub log: String,
+    /// Voice lines replaced with silence.
+    pub muted: usize,
 }
 
 /// Runs the compiler on one source file. Returns (success, output).
@@ -129,16 +140,18 @@ pub fn addon_name(slug: &str) -> String {
 
 /// Build one VPK from `jobs`. `game_dir` is Deadlock's install (for the
 /// originals), `out_vpk` where the packed mod is written.
+#[allow(clippy::too_many_arguments)]
 pub fn build_sound_mod(
     csdk: &Path,
     game_dir: &Path,
     slug: &str,
     jobs: &[SoundJob],
+    mutes: &[String],
     out_vpk: &Path,
     runner: &Runner,
     progress: &dyn Fn(&str),
 ) -> Result<BuildReport> {
-    if jobs.is_empty() {
+    if jobs.is_empty() && mutes.is_empty() {
         return Err(Error::msg("Add at least one sound before building"));
     }
     if !is_csdk_dir(csdk) {
@@ -184,10 +197,11 @@ pub fn build_sound_mod(
         let converted_channels = pcm.channels != original.channels;
         pcm = audio::to_channels(&pcm, original.channels);
         let yours = audio::measure(&pcm);
-        let gain_db = audio::match_gain_db(&original, &yours);
+        let volume_db = job.volume_db.clamp(audio::MIN_OFFSET_DB, audio::MAX_BOOST_DB);
+        let (processed, gain_db, limited, result) = audio::match_loudness(&pcm, &original, volume_db);
         let looped = is_loop(&job.target);
         let wav = content_root.join(format!("{stem}.wav"));
-        audio::write_wav(&wav, &pcm, gain_db, looped)?;
+        audio::write_wav(&wav, &processed, 0.0, looped)?;
 
         progress(&format!("Compiling {short} ({}/{})", n + 1, jobs.len()));
         let (ok, out) = runner(csdk, &wav)?;
@@ -200,7 +214,33 @@ pub fn build_sound_mod(
             )));
         }
         packed.push((format!("{stem}.vsnd_c"), std::fs::read(&compiled).at(&compiled)?));
-        items.push(ItemReport { target: job.target.clone(), original, yours, gain_db, looped, converted_channels });
+        items.push(ItemReport {
+            target: job.target.clone(),
+            original,
+            yours,
+            result,
+            gain_db,
+            volume_db,
+            limited,
+            looped,
+            converted_channels,
+        });
+    }
+
+    // Muted voice lines: a short silence at each line's path.
+    let silence = audio::Pcm { rate: 44100, channels: 1, samples: vec![0.0; 4410] };
+    for (n, target) in mutes.iter().enumerate() {
+        let stem = target_stem(target)?;
+        progress(&format!("Muting voice lines ({}/{})", n + 1, mutes.len()));
+        let wav = content_root.join(format!("{stem}.wav"));
+        audio::write_wav(&wav, &silence, 0.0, false)?;
+        let (ok, out) = runner(csdk, &wav)?;
+        log.push_str(&format!("== {stem} (muted)\n{}\n", out.trim()));
+        let compiled = game_root.join(format!("{stem}.vsnd_c"));
+        if !ok || !compiled.is_file() {
+            return Err(Error::msg(format!("CSDK couldn't compile the muted line {stem}.\n\n{}", out.trim())));
+        }
+        packed.push((format!("{stem}.vsnd_c"), std::fs::read(&compiled).at(&compiled)?));
     }
 
     progress("Packing VPK");
@@ -209,7 +249,7 @@ pub fn build_sound_mod(
     }
     vpk::write_vpk(out_vpk, &packed)?;
     let vpk_size = std::fs::metadata(out_vpk).at(out_vpk)?.len();
-    Ok(BuildReport { items, vpk: out_vpk.display().to_string(), vpk_size, log })
+    Ok(BuildReport { items, vpk: out_vpk.display().to_string(), vpk_size, log, muted: mutes.len() })
 }
 
 #[cfg(test)]
@@ -280,23 +320,28 @@ mod tests {
         audio::write_wav(&mine_hit, &tone(44100, 2, 0.3, 0.1), 0.0, false).unwrap();
 
         let jobs = vec![
-            SoundJob { target: "sounds/abilities/gigawatt/gigawatt_storm_cloud_lp.vsnd_c".into(), source: mine_lp.display().to_string() },
-            SoundJob { target: "sounds/abilities/gigawatt/a4_storm_cloud/impact_1.vsnd_c".into(), source: mine_hit.display().to_string() },
+            SoundJob { target: "sounds/abilities/gigawatt/gigawatt_storm_cloud_lp.vsnd_c".into(), source: mine_lp.display().to_string(), volume_db: 0.0 },
+            SoundJob { target: "sounds/abilities/gigawatt/a4_storm_cloud/impact_1.vsnd_c".into(), source: mine_hit.display().to_string(), volume_db: 2.0 },
         ];
+        let mutes = vec!["sounds/vo/gigawatt/gigawatt_use_power4_01.vsnd_c".to_string()];
         let out = t.path().join("out/mod.vpk");
-        let r = build_sound_mod(&csdk, &game, "Storm Cloud remix!", &jobs, &out, &fake_runner, &|_| {}).unwrap();
+        let r = build_sound_mod(&csdk, &game, "Storm Cloud remix!", &jobs, &mutes, &out, &fake_runner, &|_| {}).unwrap();
 
         assert_eq!(r.items.len(), 2);
+        assert_eq!(r.muted, 1);
         let lp = &r.items[0];
         assert!(lp.looped && lp.converted_channels);
         assert!(lp.gain_db < -10.0, "loud loop must be turned down: {}", lp.gain_db);
-        assert_eq!(r.items[1].gain_db, 0.0, "quieter sound is left alone");
-        assert!(!r.items[1].looped);
+        let hit = &r.items[1];
+        assert!(hit.gain_db > 0.0, "quiet hit is turned up: {}", hit.gain_db);
+        assert!((hit.result.loudness_db - (hit.original.loudness_db + 2.0)).abs() < 0.5, "{:?}", hit);
+        assert!(!hit.looped);
 
         let files = vpk::list_files(&out).unwrap();
         assert_eq!(files, vec![
             "sounds/abilities/gigawatt/a4_storm_cloud/impact_1.vsnd_c",
             "sounds/abilities/gigawatt/gigawatt_storm_cloud_lp.vsnd_c",
+            "sounds/vo/gigawatt/gigawatt_use_power4_01.vsnd_c",
         ]);
         // The packed loop, decoded, is no louder than the original.
         let d = vpk::read_directory(&out).unwrap();
@@ -314,8 +359,8 @@ mod tests {
         assert!(target_stem("sounds/../x.vsnd_c").is_err());
         assert!(target_stem("sounds/a/b.vsnd_c").is_ok());
         let t = tempfile::tempdir().unwrap();
-        let jobs = vec![SoundJob { target: "sounds/a.vsnd_c".into(), source: "x".into() }];
-        let e = build_sound_mod(t.path(), t.path(), "x", &jobs, &t.path().join("o.vpk"), &fake_runner, &|_| {});
+        let jobs = vec![SoundJob { target: "sounds/a.vsnd_c".into(), source: "x".into(), volume_db: 0.0 }];
+        let e = build_sound_mod(t.path(), t.path(), "x", &jobs, &[], &t.path().join("o.vpk"), &fake_runner, &|_| {});
         assert!(e.unwrap_err().to_string().contains("CSDK wasn't found"));
     }
 

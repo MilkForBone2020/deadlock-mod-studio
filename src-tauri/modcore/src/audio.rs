@@ -2,9 +2,10 @@
 //! any common format (MP3, WAV, MP4/M4A, OGG, FLAC), measuring loudness and
 //! writing the WAV that Valve's compiler turns into a game sound.
 //!
-//! Ground rule: a replacement is never louder than the original. The app
-//! measures both and turns the new sound down if it is louder (by integrated
-//! loudness or by peak, whichever needs more), and never turns it up.
+//! Ground rule: a replacement starts at the same loudness as the original
+//! (turned up or down to match), and I can adjust it from there, but never to
+//! more than `MAX_BOOST_DB` above the original. A limiter keeps boosted
+//! sounds from clipping.
 
 use crate::{Error, IoCtx, Result};
 use serde::Serialize;
@@ -172,17 +173,65 @@ pub fn measure(pcm: &Pcm) -> Level {
     }
 }
 
-/// Gain (dB, always <= 0) that keeps `new` from being louder than `original`
-/// in loudness or in peak. 0.2 dB of tolerance avoids pointless tiny cuts.
-pub fn match_gain_db(original: &Level, new: &Level) -> f64 {
-    let by_loudness = original.loudness_db - new.loudness_db;
-    let by_peak = original.peak_db - new.peak_db;
-    let g = by_loudness.min(by_peak);
-    if g < -0.2 {
-        (g * 10.0).round() / 10.0
-    } else {
-        0.0
+/// The most a replacement may be louder than the original (integrated
+/// loudness). Enforced here, whatever the UI sends.
+pub const MAX_BOOST_DB: f64 = 3.0;
+/// The quietest a user offset may go.
+pub const MIN_OFFSET_DB: f64 = -24.0;
+/// Sample peaks are held below this (dBFS) by the limiter.
+pub const CEILING_DB: f64 = -0.5;
+
+/// Gain (dB) that brings `new` to the original's loudness plus `offset_db`
+/// (clamped to MIN_OFFSET_DB..=MAX_BOOST_DB).
+pub fn plan_gain_db(original: &Level, new: &Level, offset_db: f64) -> f64 {
+    let offset = offset_db.clamp(MIN_OFFSET_DB, MAX_BOOST_DB);
+    let g = original.loudness_db + offset - new.loudness_db;
+    (g * 10.0).round() / 10.0
+}
+
+/// Apply gain with a simple peak limiter (instant attack, 80 ms release)
+/// holding samples under CEILING_DB. Returns the result and whether the
+/// limiter had to act.
+pub fn apply_gain(pcm: &Pcm, gain_db: f64) -> (Pcm, bool) {
+    let gain = 10f64.powf(gain_db / 20.0) as f32;
+    let ceiling = 10f64.powf(CEILING_DB / 20.0) as f32;
+    let ch = pcm.channels.max(1) as usize;
+    let release = (-1.0 / (0.08 * pcm.rate.max(1) as f64)).exp() as f32;
+    let mut env = 0f32;
+    let mut limited = false;
+    let mut out = Vec::with_capacity(pcm.samples.len());
+    for frame in pcm.samples.chunks(ch) {
+        let peak = frame.iter().fold(0f32, |m, s| m.max((s * gain).abs()));
+        env = peak.max(env * release);
+        let g = if env > ceiling {
+            limited = true;
+            ceiling / env
+        } else {
+            1.0
+        };
+        out.extend(frame.iter().map(|s| (s * gain * g).clamp(-1.0, 1.0)));
     }
+    (Pcm { rate: pcm.rate, channels: pcm.channels, samples: out }, limited)
+}
+
+/// Match `pcm` to the original's loudness plus a user offset, never more
+/// than MAX_BOOST_DB above it. Returns the processed audio, the gain used,
+/// whether the limiter acted, and the final level.
+pub fn match_loudness(pcm: &Pcm, original: &Level, offset_db: f64) -> (Pcm, f64, bool, Level) {
+    let yours = measure(pcm);
+    let mut gain = plan_gain_db(original, &yours, offset_db);
+    let (mut out, mut limited) = apply_gain(pcm, gain);
+    let mut level = measure(&out);
+    // Safety net: the limiter changes loudness a little; never exceed the cap.
+    let cap = original.loudness_db + MAX_BOOST_DB + 0.1;
+    if level.loudness_db > cap {
+        gain -= level.loudness_db - cap + 0.1;
+        let r = apply_gain(pcm, gain);
+        out = r.0;
+        limited = r.1;
+        level = measure(&out);
+    }
+    (out, (gain * 10.0).round() / 10.0, limited, level)
 }
 
 /// Mix to the original's channel count (mono <-> stereo; other layouts are
@@ -296,20 +345,32 @@ mod tests {
     }
 
     #[test]
-    fn louder_sound_is_turned_down_quieter_left_alone() {
+    fn matches_loudness_both_ways() {
         let orig = measure(&tone(48000, 1, 1.0, 0.25));
-        let loud = measure(&tone(48000, 1, 1.0, 0.9));
-        let quiet = measure(&tone(48000, 1, 1.0, 0.1));
-        let g = match_gain_db(&orig, &loud);
+        // Louder: turned down to match.
+        let (_, g, _, l) = match_loudness(&tone(48000, 1, 1.0, 0.9), &orig, 0.0);
         assert!(g < -10.0 && g > -12.0, "gain {g}");
-        assert_eq!(match_gain_db(&orig, &quiet), 0.0);
-        // After applying the gain it measures within 0.3 dB of the original.
-        let t = tempfile::tempdir().unwrap();
-        let p = t.path().join("y.wav");
-        write_wav(&p, &tone(48000, 1, 1.0, 0.9), g, false).unwrap();
-        let after = measure(&decode_file(&p).unwrap());
-        assert!((after.loudness_db - orig.loudness_db).abs() < 0.3, "{after:?} vs {orig:?}");
-        assert!(after.peak_db <= orig.peak_db + 0.2);
+        assert!((l.loudness_db - orig.loudness_db).abs() < 0.3, "{l:?} vs {orig:?}");
+        // Quieter: turned up to match.
+        let (_, g, _, l) = match_loudness(&tone(48000, 1, 1.0, 0.05), &orig, 0.0);
+        assert!(g > 13.0, "gain {g}");
+        assert!((l.loudness_db - orig.loudness_db).abs() < 0.3, "{l:?} vs {orig:?}");
+        // User offset down.
+        let (_, _, _, l) = match_loudness(&tone(48000, 1, 1.0, 0.5), &orig, -6.0);
+        assert!((l.loudness_db - (orig.loudness_db - 6.0)).abs() < 0.3);
+    }
+
+    #[test]
+    fn boost_is_capped_and_limited() {
+        // A loud original (peaks near full scale) and a request for +10 dB:
+        // capped at +3 dB, limiter keeps peaks under the ceiling.
+        let orig = measure(&tone(44100, 2, 1.0, 0.8));
+        let (out, _, limited, l) = match_loudness(&tone(44100, 2, 1.0, 0.3), &orig, 10.0);
+        assert!(l.loudness_db <= orig.loudness_db + MAX_BOOST_DB + 0.2, "{l:?} vs {orig:?}");
+        assert!(limited);
+        assert!(measure(&out).peak_db <= CEILING_DB + 0.05);
+        assert_eq!(plan_gain_db(&orig, &orig, 99.0), MAX_BOOST_DB);
+        assert_eq!(plan_gain_db(&orig, &orig, -99.0), MIN_OFFSET_DB);
     }
 
     #[test]

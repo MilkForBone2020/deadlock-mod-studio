@@ -74,13 +74,17 @@ enable two mods that share a file (the app flags these) and see which one plays.
 ## Sound Builder
 
 Make sound mods without opening CSDK's tools. Create a sound mod, add the
-game sounds it replaces (searched straight from Deadlock's own files, with
-preview), and choose your files: MP3, WAV, MP4, M4A, OGG, FLAC or AAC.
+game sounds it replaces and choose your files. The picker browses by hero and
+ability (e.g. *Seven · Storm Cloud (Ult) · Bolt cast*), worked out from the
+game's own sound events, hero data and localisation, with preview. Each
+ability's voice lines can be muted in the mod. Supported files: MP3, WAV, MP4, M4A, OGG, FLAC or AAC.
 **Build mod** then, for each sound:
 
 1. reads the original from the game and measures its loudness and peak,
-2. converts your file to the original's channel count and turns it down if
-   it's louder (never up), per the ground rules,
+2. converts your file to the original's channel count and matches it to the
+   original's loudness (up or down), then applies your volume setting: from
+   −12 dB up to a hard cap of **+3 dB** above the original, with a limiter so
+   boosts never clip (ground rules),
 3. writes a WAV at the original's path in a `dms_*` addon inside CSDK
    (looping sounds get WAV loop markers),
 4. compiles it with `resourcecompiler.exe`,

@@ -49,10 +49,11 @@ let projects: SoundProject[] = [
     name: "Storm Cloud remix",
     hero: "Seven",
     items: [
-      { target: "sounds/abilities/gigawatt/gigawatt_storm_cloud_lp.vsnd_c", source: "D:\\Audio\\storm_loop_v3.wav" },
-      { target: "sounds/abilities/gigawatt/gigawatt_storm_cloud_cast.vsnd_c", source: "D:\\Audio\\thunder_cast.mp4" },
-      { target: "sounds/abilities/gigawatt/a4_storm_cloud/impact_1.vsnd_c", source: "" },
+      { target: "sounds/abilities/gigawatt/gigawatt_storm_cloud_lp.vsnd_c", source: "D:\\Audio\\storm_loop_v3.wav", volumeDb: 0 },
+      { target: "sounds/abilities/gigawatt/gigawatt_storm_cloud_cast.vsnd_c", source: "D:\\Audio\\thunder_cast.mp4", volumeDb: 2 },
+      { target: "sounds/abilities/gigawatt/gigawatt_storm_cloud_bolt_cast.vsnd_c", source: "", volumeDb: 0 },
     ],
+    muteVoice: [{ hero: "gigawatt", slot: 4 }],
     modId: "a1",
     lastBuilt: "2026-11-08T15:30:00+00:00",
   },
@@ -62,6 +63,23 @@ const gameSounds = [
   "gigawatt_storm_cloud_aoe_lp", "gigawatt_storm_cloud_bolt_cast", "gigawatt_storm_cloud_bolt_explo_01", "gigawatt_storm_cloud_cast",
   "gigawatt_storm_cloud_end", "gigawatt_storm_cloud_lp", "gigawatt_power_surge_activate_lp", "gigawatt_static_charge_cast",
 ].map((s) => `sounds/abilities/gigawatt/${s}.vsnd_c`);
+const heroes = [
+  { code: "gigawatt", name: "Seven", abilities: [
+    { slot: 1, key: "citadel_ability_lightning_ball", name: "Lightning Ball", voiceLines: 10 },
+    { slot: 2, key: "citadel_ability_static_charge", name: "Static Charge", voiceLines: 10 },
+    { slot: 3, key: "ability_power_surge", name: "Power Surge", voiceLines: 10 },
+    { slot: 4, key: "citadel_ability_storm_cloud", name: "Storm Cloud", voiceLines: 15 },
+  ] },
+  { code: "inferno", name: "Infernus", abilities: [] },
+];
+function mockUses(p: string) {
+  const f = p.split("/").pop()!.replace(".vsnd_c", "");
+  const part = f.includes("storm_cloud") ? f.replace(/^.*storm_cloud_?/, "").replace(/_/g, " ") || "cast" : f;
+  const slot = f.includes("storm_cloud") || p.includes("a4_") ? 4 : f.includes("lightning_ball") ? 1 : f.includes("static_charge") ? 2 : f.includes("power_surge") ? 3 : null;
+  const names: Record<number, string> = { 1: "Lightning Ball", 2: "Static Charge", 3: "Power Surge", 4: "Storm Cloud" };
+  const label = part.replace(/\blp\b/, "loop").replace(/explo/, "explosion");
+  return [{ hero: "gigawatt", heroName: "Seven", category: slot ? "Ability" : "Other", slot, abilityName: slot ? names[slot] : null, part: label[0].toUpperCase() + label.slice(1), event: "Gigawatt.Mock" }];
+}
 let log: string[] = [`${now().slice(0, 19)}+00:00  Imported "Seven Storm Cloud remix" (5 files inside)`];
 
 function plan() {
@@ -156,10 +174,22 @@ export const mockApi: Api = {
   readLog: async () => log,
   openFolder: ok,
   launchGame: ok,
-  searchGameSounds: async (query) => {
+  searchGameSounds: async (query, hero, group) => {
     const w = query.toLowerCase().split(/\s+/).filter(Boolean);
-    const r = gameSounds.filter((p) => w.every((x) => p.includes(x)));
-    return { total: r.length, results: r.map((path) => ({ path, size: 150000, looped: /_lp\./.test(path) })) };
+    const r = gameSounds.filter((p) => w.every((x) => (p + " " + mockUses(p).map((u) => `${u.abilityName} ${u.part}`).join(" ")).toLowerCase().includes(x)))
+      .filter((p) => !hero || mockUses(p).some((u) => u.hero === hero))
+      .filter((p) => !group || mockUses(p).some((u) => (group.startsWith("slot:") ? `slot:${u.slot}` === group : u.category === group)));
+    return { total: r.length, results: r.map((path) => ({ path, size: 150000, looped: /_lp\./.test(path), uses: mockUses(path) })) };
+  },
+  soundHeroes: async () => heroes,
+  describeSounds: async (paths) => Object.fromEntries(paths.map((p) => [p, mockUses(p)])),
+  setItemVolume: async (id, target, volumeDb) => {
+    projects = projects.map((p) => (p.id !== id ? p : { ...p, items: p.items.map((i) => (i.target === target ? { ...i, volumeDb: Math.min(3, volumeDb) } : i)) }));
+  },
+  setVoiceMute: async (id, hero, slot, on) => {
+    projects = projects.map((p) =>
+      p.id !== id ? p : { ...p, muteVoice: [...p.muteVoice.filter((m) => !(m.hero === hero && m.slot === slot)), ...(on ? [{ hero, slot }] : [])] },
+    );
   },
   audioLevel: async (kind, path) => ({
     loudnessDb: kind === "game" ? -15.8 : path.includes("mp4") ? -9.1 : -16.4,
@@ -172,7 +202,7 @@ export const mockApi: Api = {
   detectCsdk: async () => "D:\\Desktop\\Reduced_CSDK_13",
   setCsdkDir: ok,
   createSoundProject: async (name, hero) => {
-    const p = { id: String(Date.now()), name, hero, items: [], modId: null, lastBuilt: null };
+    const p = { id: String(Date.now()), name, hero, items: [], muteVoice: [], modId: null, lastBuilt: null };
     projects = [...projects, p];
     return p;
   },
@@ -184,7 +214,7 @@ export const mockApi: Api = {
   },
   setProjectItem: async (id, target, source) => {
     projects = projects.map((p) =>
-      p.id !== id ? p : { ...p, items: p.items.some((i) => i.target === target) ? p.items.map((i) => (i.target === target ? { target, source } : i)) : [...p.items, { target, source }] },
+      p.id !== id ? p : { ...p, items: p.items.some((i) => i.target === target) ? p.items.map((i) => (i.target === target ? { ...i, source } : i)) : [...p.items, { target, source, volumeDb: 0 }] },
     );
   },
   removeProjectItem: async (id, target) => {
@@ -200,11 +230,15 @@ export const mockApi: Api = {
         vpk: "x.vpk",
         vpkSize: 2_400_000,
         log: "OK: 1 compiled, 0 failed, 0 skipped",
-        items: p.items.map((i, k) => ({
+        muted: 15,
+        items: p.items.filter((i) => i.source).map((i, k) => ({
           target: i.target,
           original: { loudnessDb: -15.8, peakDb: -0.6, durationSecs: 18, channels: 2, rate: 44100 },
-          yours: { loudnessDb: k === 1 ? -9.1 : -16.4, peakDb: -0.2, durationSecs: 18, channels: k === 1 ? 1 : 2, rate: 48000 },
-          gainDb: k === 1 ? -6.7 : 0,
+          yours: { loudnessDb: k === 1 ? -9.1 : -21.4, peakDb: -0.2, durationSecs: 18, channels: k === 1 ? 1 : 2, rate: 48000 },
+          result: { loudnessDb: -15.8 + i.volumeDb, peakDb: -0.5, durationSecs: 18, channels: 2, rate: 44100 },
+          gainDb: k === 1 ? -4.7 : 5.6,
+          volumeDb: i.volumeDb,
+          limited: k === 1,
           looped: i.target.includes("_lp"),
           convertedChannels: k === 1,
         })),

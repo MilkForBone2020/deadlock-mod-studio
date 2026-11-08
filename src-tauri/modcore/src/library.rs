@@ -85,6 +85,15 @@ pub struct Settings {
     pub csdk_dir: Option<String>,
 }
 
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct VoiceMute {
+    /// Hero code name, e.g. `gigawatt`.
+    pub hero: String,
+    /// Ability slot 1–4.
+    pub slot: u8,
+}
+
 /// A sound mod being made in the app: which game sounds it replaces, with
 /// which of my files. Building it produces (or updates) a library mod.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -96,6 +105,9 @@ pub struct SoundProject {
     pub hero: String,
     #[serde(default)]
     pub items: Vec<crate::csdk::SoundJob>,
+    /// Hero abilities whose voice lines this mod replaces with silence.
+    #[serde(default)]
+    pub mute_voice: Vec<VoiceMute>,
     /// The library mod this project builds into, once built.
     #[serde(default)]
     pub mod_id: Option<String>,
@@ -530,6 +542,7 @@ impl Library {
             name: name.to_string(),
             hero: hero.trim().to_string(),
             items: Vec::new(),
+            mute_voice: Vec::new(),
             mod_id: None,
             last_built: None,
         };
@@ -562,7 +575,33 @@ impl Library {
         if let Some(it) = p.items.iter_mut().find(|i| i.target == target) {
             it.source = source.to_string();
         } else {
-            p.items.push(crate::csdk::SoundJob { target, source: source.to_string() });
+            p.items.push(crate::csdk::SoundJob { target, source: source.to_string(), volume_db: 0.0 });
+        }
+        self.save()
+    }
+
+    /// Volume relative to the original, clamped to the allowed range.
+    pub fn set_item_volume(&mut self, id: &str, target: &str, volume_db: f64) -> Result<()> {
+        let v = volume_db.clamp(crate::audio::MIN_OFFSET_DB, crate::audio::MAX_BOOST_DB);
+        let p = self.project_mut(id)?;
+        let it = p
+            .items
+            .iter_mut()
+            .find(|i| i.target == target)
+            .ok_or_else(|| Error::msg("That sound isn't in this project"))?;
+        it.volume_db = (v * 10.0).round() / 10.0;
+        self.save()
+    }
+
+    pub fn set_voice_mute(&mut self, id: &str, hero: &str, slot: u8, on: bool) -> Result<()> {
+        if !(1..=4).contains(&slot) {
+            return Err(Error::msg("Ability slot must be 1 to 4"));
+        }
+        let p = self.project_mut(id)?;
+        let m = VoiceMute { hero: hero.to_lowercase(), slot };
+        p.mute_voice.retain(|x| x != &m);
+        if on {
+            p.mute_voice.push(m);
         }
         self.save()
     }
@@ -771,6 +810,12 @@ mod tests {
         lib.set_project_item(&p.id, "sounds/a/b_lp.vsnd_c", "C:/y.wav").unwrap();
         assert_eq!(lib.project(&p.id).unwrap().items.len(), 1, "same target updates in place");
         assert_eq!(lib.project(&p.id).unwrap().items[0].source, "C:/y.wav");
+        lib.set_item_volume(&p.id, "sounds/a/b_lp.vsnd_c", 9.0).unwrap();
+        assert_eq!(lib.project(&p.id).unwrap().items[0].volume_db, crate::audio::MAX_BOOST_DB, "capped");
+        lib.set_voice_mute(&p.id, "GIGAWATT", 4, true).unwrap();
+        lib.set_voice_mute(&p.id, "gigawatt", 4, true).unwrap();
+        assert_eq!(lib.project(&p.id).unwrap().mute_voice.len(), 1);
+        assert!(lib.set_voice_mute(&p.id, "gigawatt", 5, true).is_err());
 
         let v1 = write_vpk(t.path(), "b1.vpk", &["sounds/a/b_lp.vsnd_c"]);
         let id = lib.store_build(&p.id, &v1).unwrap();

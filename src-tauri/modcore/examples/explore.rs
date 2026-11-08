@@ -9,7 +9,7 @@ fn main() {
     let sounds = d.entries.iter().filter(|e| e.path.ends_with(".vsnd_c")).count();
     for e in d.entries.iter().filter(|e| e.path.contains(&f)) {
         n += 1;
-        if n <= 60 { println!("{}  arch={} off={} len={} pre={}", e.path, e.archive_index, e.offset, e.length, e.preload.len()); }
+        if n <= 60 || std::env::var("ALL").is_ok() { println!("{}  arch={} off={} len={} pre={}", e.path, e.archive_index, e.offset, e.length, e.preload.len()); }
     }
     eprintln!("{n} matches; {total} entries; {sounds} .vsnd_c");
 }

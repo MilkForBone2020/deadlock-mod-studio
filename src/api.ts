@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { ApplyReport, BuildResult, Level, ModMeta, Overview, Profile, SafeModeEvent, SoundProject, SoundSearch } from "./types";
+import type { ApplyReport, BuildResult, HeroInfo, Level, ModMeta, Overview, Profile, SafeModeEvent, SoundProject, SoundSearch, SoundUse } from "./types";
 import { mockApi } from "./mock";
 
 /** False when the UI is opened in a plain browser (`npm run dev`) for design work. */
@@ -29,7 +29,12 @@ const tauriApi = {
   openFolder: (which: "library" | "backups" | "logs" | "addons" | "game") =>
     invoke<void>("open_folder", { which }),
   launchGame: () => invoke<void>("launch_game"),
-  searchGameSounds: (query: string, limit = 200) => invoke<SoundSearch>("search_game_sounds", { query, limit }),
+  searchGameSounds: (query: string, hero: string | null, group: string | null, limit = 300) =>
+    invoke<SoundSearch>("search_game_sounds", { query, hero, group, limit }),
+  soundHeroes: () => invoke<HeroInfo[]>("sound_heroes"),
+  describeSounds: (paths: string[]) => invoke<Record<string, SoundUse[]>>("describe_sounds", { paths }),
+  setItemVolume: (id: string, target: string, volumeDb: number) => invoke<void>("set_item_volume", { id, target, volumeDb }),
+  setVoiceMute: (id: string, hero: string, slot: number, on: boolean) => invoke<void>("set_voice_mute", { id, hero, slot, on }),
   audioLevel: (kind: "game" | "file", path: string) => invoke<Level>("audio_level", { kind, path }),
   audioBytes: (kind: "game" | "file", path: string) => invoke<ArrayBuffer>("audio_bytes", { kind, path }),
   detectCsdk: () => invoke<string | null>("detect_csdk"),

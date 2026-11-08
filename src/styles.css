@@ -422,3 +422,28 @@ textarea { resize: vertical; }
 details summary { cursor: pointer; color: var(--muted); font-size: 13px; }
 .steps { text-align: left; color: var(--muted); max-width: 460px; margin: 0; padding-left: 20px; display: flex; flex-direction: column; gap: 6px; }
 .steps strong { color: var(--text); }
+
+/* ---------- Sound Builder v2 ---------- */
+.item { display: flex; flex-direction: column; align-items: stretch; gap: 10px; }
+.item-top { display: grid; grid-template-columns: minmax(0, 1.2fr) 20px minmax(0, 1fr) 28px; gap: 14px; align-items: center; }
+.item-top > svg { color: var(--faint); }
+.use { font-weight: 600; }
+.use.none { font-weight: 400; color: var(--faint); font-style: italic; }
+.use-more { font-weight: 400; color: var(--muted); font-size: 12px; }
+.vol-row { display: flex; align-items: center; gap: 12px; padding: 8px 4px 0 36px; border-top: 1px solid var(--line); flex-wrap: wrap; }
+.vol-label { font-size: 12px; color: var(--muted); }
+.vol-row input[type="range"] { width: 200px; padding: 0; accent-color: var(--gold); background: transparent; border: 0; }
+.vol-value { font-size: 12.5px; font-variant-numeric: tabular-nums; min-width: 220px; }
+.vol-value.up { color: var(--amber); }
+.vol-note { font-size: 12px; color: var(--faint); }
+.voice-card { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 14px 16px; display: flex; flex-direction: column; gap: 8px; }
+.voice-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 6px; }
+.voice-opt { display: flex; align-items: center; gap: 9px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; cursor: pointer; font-size: 13px; }
+.voice-opt input { width: auto; accent-color: var(--gold); }
+.voice-opt.on { border-color: rgba(214, 182, 112, 0.5); background: var(--gold-dim); }
+.voice-opt.disabled { opacity: 0.5; cursor: default; }
+.slot-tag { font-size: 11px; font-weight: 600; color: var(--gold); border: 1px solid rgba(214, 182, 112, 0.4); border-radius: 8px; padding: 0 6px; margin-left: 4px; }
+.picker-filters { display: flex; gap: 8px; }
+.picker-filters select { width: 190px; flex: none; }
+.chips.wrap { flex-wrap: wrap; }
+.report td.up { color: var(--amber); }
