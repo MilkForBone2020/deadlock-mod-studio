@@ -5,6 +5,8 @@ name: Build Windows installer
 on:
   push:
     branches: [main]
+    paths-ignore:
+      - .github/workflows/build-s2v.yml
   workflow_dispatch:
 
 permissions:

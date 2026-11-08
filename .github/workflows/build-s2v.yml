@@ -1,0 +1,63 @@
+# Builds Source 2 Viewer's command-line tool from its official source at a
+# pinned commit, for Model Builder. The latest official release (20.1)
+# predates cloth decompiling, which only exists on their main branch, so we
+# build that commit ourselves and publish it as a release of this repo.
+# The app downloads the Windows zip and checks its SHA-256 (printed below).
+#
+# Source 2 Viewer / ValveResourceFormat is MIT licensed:
+# https://github.com/ValveResourceFormat/ValveResourceFormat
+
+name: Build Source 2 Viewer CLI
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - .github/workflows/build-s2v.yml
+
+permissions:
+  contents: write
+
+env:
+  VRF_COMMIT: fcf73230637a8a0718d6d79b86fb39e17093522f
+  TAG: s2v-fcf7323
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out ValveResourceFormat at the pinned commit
+        uses: actions/checkout@v5
+        with:
+          repository: ValveResourceFormat/ValveResourceFormat
+          ref: ${{ env.VRF_COMMIT }}
+          path: vrf
+
+      - uses: actions/setup-dotnet@v5
+        with:
+          global-json-file: vrf/global.json
+
+      - name: Publish CLI (Windows x64 and Linux x64)
+        working-directory: vrf
+        run: |
+          dotnet publish CLI/CLI.csproj --configuration Release --self-contained --runtime win-x64 -p:RunAnalyzersDuringBuild=false
+          dotnet publish CLI/CLI.csproj --configuration Release --self-contained --runtime linux-x64 -p:RunAnalyzersDuringBuild=false
+
+      - name: Zip
+        run: |
+          mkdir out
+          for rt in win-x64 linux-x64; do
+            cp vrf/LICENSE vrf/CLI/bin/Release/$rt/publish/LICENSE.txt
+            (cd vrf/CLI/bin/Release/$rt/publish && zip -q -r -X "$GITHUB_WORKSPACE/out/s2v-cli-$rt.zip" .)
+          done
+          cd out && sha256sum *.zip | tee SHA256SUMS.txt
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release delete "$TAG" --repo "$GITHUB_REPOSITORY" --yes --cleanup-tag || true
+          gh release create "$TAG" out/*.zip out/SHA256SUMS.txt --repo "$GITHUB_REPOSITORY" \
+            --title "Source 2 Viewer CLI (ValveResourceFormat ${VRF_COMMIT:0:7})" \
+            --notes "Built by .github/workflows/build-s2v.yml from https://github.com/ValveResourceFormat/ValveResourceFormat/commit/$VRF_COMMIT (MIT licence). Used by Model Builder; not an app update." \
+            --prerelease
