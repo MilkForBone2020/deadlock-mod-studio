@@ -14,13 +14,16 @@ jobs:
       - name: Find the project folder
         shell: pwsh
         run: |
-          if (Test-Path "package.json") { $p = "." }
-          elseif (Test-Path "deadlock-mod-studio/package.json") { $p = "deadlock-mod-studio" }
-          else {
+          $pkg = Get-ChildItem -Path . -Filter package.json -Recurse -Depth 4 -File |
+            Where-Object { $_.FullName -notmatch 'node_modules' -and (Test-Path (Join-Path $_.DirectoryName 'src-tauri')) } |
+            Select-Object -First 1
+          if (-not $pkg) {
             Write-Host "::error::Project files not found. Upload the contents of the deadlock-mod-studio folder (package.json, src, src-tauri...) to the repo."
-            Get-ChildItem -Recurse -Depth 1 | Select-Object FullName
             exit 1
           }
+          Push-Location $pkg.DirectoryName; $p = Resolve-Path -Relative $env:GITHUB_WORKSPACE; Pop-Location
+          $p = (Resolve-Path -Relative $pkg.DirectoryName) -replace '\\','/' -replace '^\./',''
+          if ($p -eq '') { $p = '.' }
           "PROJ=$p" | Out-File -FilePath $env:GITHUB_ENV -Append
           Write-Host "Project folder: $p"
 
