@@ -2,7 +2,7 @@
 // plain browser (`npm run dev`) so the design can be worked on without the
 // desktop app. Nothing here touches real files.
 
-import type { Action, ModEntry, Overview, Profile, SoundProject } from "./types";
+import type { Action, ModEntry, ModelProject, ModelSummary, Overview, Profile, SoundProject } from "./types";
 import type { Api } from "./api";
 
 const BUILD = "20614033";
@@ -111,6 +111,25 @@ function conflicts() {
 
 const ok = async () => undefined;
 
+let modelProjects: ModelProject[] = [
+  { id: "m1seven", name: "Seven test rebuild", hero: "gigawatt", model: "models/heroes_staging/gigawatt_prisoner/gigawatt_prisoner.vmdl", created: now(), extracted: null, extractedBuild: null, modId: null, lastBuilt: null },
+];
+let s2vInstalled = false;
+const sevenSummary: ModelSummary = {
+  bones: Array.from({ length: 245 }, (_, i) => (i === 0 ? "root_motion" : `bone_${i}`)),
+  meshes: 20,
+  lods: 4,
+  bodyGroups: ["DEFAULT: BASE", "DEFAULT: NO_GUN", "DEFAULT: NO_GUN_AND_SKELETON"],
+  materials: ["materials/blue_illum.vmat", "models/heroes_staging/gigawatt/materials/gig_greybox.vmat", "models/heroes_staging/gigawatt_prisoner/materials/gigawatt_prisoner.vmat", "models/heroes_staging/gigawatt_prisoner/materials/gigawatt_prisoner_gun_d.vmat", "models/heroes_staging/gigawatt_prisoner/materials/gigawatt_prisoner_head.vmat"],
+  attachments: Array.from({ length: 76 }, (_, i) => `attach_${i}`),
+  hitboxes: 20,
+  ragdollBodies: 18,
+  clothNodes: 131,
+  animGraphs: ["animgraphs/animgraph2/hero/hero.vnmgraph+gigawatt.vnmgraph"],
+  trianglesLod0: 269945,
+};
+const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
 export const mockApi: Api = {
   overview: async (): Promise<Overview> => ({
     mods: structuredClone(mods),
@@ -123,6 +142,8 @@ export const mockApi: Api = {
     dataDir: "C:\\Users\\you\\AppData\\Roaming\\app.deadlockmodstudio.local",
     soundProjects: structuredClone(projects),
     csdkFound: true,
+    modelProjects: structuredClone(modelProjects),
+    s2vInstalled,
   }),
   checkForUpdate: async () => null,
   dismissSafeMode: ok,
@@ -243,6 +264,40 @@ export const mockApi: Api = {
           convertedChannels: k === 1,
         })),
       },
+    };
+  },
+  modelHeroes: async () => [
+    { code: "gigawatt", name: "Seven", model: "models/heroes_staging/gigawatt_prisoner/gigawatt_prisoner.vmdl" },
+    { code: "haze", name: "Haze", model: "models/heroes_staging/haze/haze.vmdl" },
+    { code: "bebop", name: "Bebop", model: "models/heroes_staging/bebop/bebop.vmdl" },
+  ],
+  createModelProject: async (name, hero) => {
+    const p: ModelProject = { id: `m${Date.now()}`, name, hero, model: `models/heroes_staging/${hero}/${hero}.vmdl`, created: now(), extracted: null, extractedBuild: null, modId: null, lastBuilt: null };
+    modelProjects = [...modelProjects, p];
+    return p;
+  },
+  renameModelProject: async (id, name) => {
+    modelProjects = modelProjects.map((p) => (p.id === id ? { ...p, name } : p));
+  },
+  deleteModelProject: async (id) => {
+    modelProjects = modelProjects.filter((p) => p.id !== id);
+  },
+  modelSummary: async (id) => (modelProjects.find((p) => p.id === id)?.extracted ? sevenSummary : null),
+  openModelFolder: ok,
+  extractModelProject: async (id) => {
+    await wait(900);
+    s2vInstalled = true;
+    modelProjects = modelProjects.map((p) => (p.id === id ? { ...p, extracted: now(), extractedBuild: BUILD } : p));
+    return { project: modelProjects.find((p) => p.id === id)!, report: { summary: sevenSummary, blenderFile: "C:\\x\\blender\\gigawatt_prisoner.glb", template: "x.vmdl", meshFiles: [], log: "" } };
+  },
+  buildModelProject: async (id) => {
+    await wait(900);
+    const p = modelProjects.find((x) => x.id === id)!;
+    modelProjects = modelProjects.map((x) => (x.id === id ? { ...x, lastBuilt: now(), modId: "a1" } : x));
+    return {
+      modId: "a1",
+      modName: p.name,
+      report: { vpk: "x.vpk", vpkSize: 21_400_000, files: [`${p.model}_c`, p.model.replace(".vmdl", "_backup.vmdl_c")], warnings: ["WARNING: Unknown game data class CCitadelHeroModelGameData_t"], log: "OK: 1 compiled, 0 failed, 0 skipped" },
     };
   },
 };

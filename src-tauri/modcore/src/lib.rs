@@ -8,9 +8,12 @@ pub mod catalog;
 pub mod csdk;
 pub mod gameinfo;
 pub mod kv3;
+pub mod kv3text;
 pub mod library;
+pub mod model;
 pub mod steam;
 pub mod sync;
+pub mod tools;
 pub mod vpk;
 
 use thiserror::Error;

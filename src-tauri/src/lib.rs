@@ -4,7 +4,9 @@
 use modcore::audio::{self, Level};
 use modcore::catalog::{self, Catalog, HeroInfo, SoundUse};
 use modcore::csdk::{self, BuildReport};
-use modcore::library::{BuildCheck, Library, ModEntry, ModMeta, Profile, SafeModeEvent, Settings, SoundProject};
+use modcore::library::{BuildCheck, Library, ModEntry, ModMeta, ModelProject, Profile, SafeModeEvent, Settings, SoundProject};
+use modcore::model::{self, ExtractReport, ModelBuildReport, ModelSummary};
+use modcore::tools;
 use modcore::vpk::Directory;
 use modcore::sync::{self, ApplyReport, Plan};
 use modcore::{steam, Error};
@@ -56,6 +58,9 @@ struct Overview {
     data_dir: String,
     sound_projects: Vec<SoundProject>,
     csdk_found: bool,
+    model_projects: Vec<ModelProject>,
+    /// Whether Source 2 Viewer's command-line tool is installed.
+    s2v_installed: bool,
 }
 
 /// Is Deadlock (project8.exe) running right now?
@@ -121,6 +126,8 @@ fn overview_of(lib: &Library) -> CmdResult<Overview> {
         data_dir: lib.root.display().to_string(),
         sound_projects: lib.state.sound_projects.clone(),
         csdk_found: lib.state.settings.csdk_dir.as_deref().map(|d| csdk::is_csdk_dir(Path::new(d))).unwrap_or(false),
+        model_projects: lib.state.model_projects.clone(),
+        s2v_installed: tools::s2v_exe(&lib.root.join("tools")).is_some(),
     })
 }
 
@@ -608,6 +615,205 @@ async fn build_sound_project(app_handle: tauri::AppHandle, app: State<'_, App>, 
     Ok(BuildResult { report, mod_id, mod_name })
 }
 
+// ---------- Model Builder ----------
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ModelHero {
+    code: String,
+    name: String,
+    model: String,
+}
+
+fn hero_model_list(app: &App, cat: &Catalog) -> CmdResult<Vec<ModelHero>> {
+    let d = game_index(app)?;
+    let e = d.find("scripts/heroes.vdata_c").ok_or("The game's hero list (scripts/heroes.vdata) is missing")?;
+    let kv = modcore::kv3::parse_resource(&d.extract(e).map_err(err)?).map_err(err)?;
+    let models = model::hero_models(&kv);
+    Ok(cat
+        .heroes
+        .iter()
+        .filter_map(|h| {
+            models.iter().find(|m| m.code == h.code).map(|m| ModelHero { code: h.code.clone(), name: h.name.clone(), model: m.model.clone() })
+        })
+        .collect())
+}
+
+/// Heroes whose model can be replaced, with their model paths.
+#[tauri::command]
+async fn model_heroes(app: State<'_, App>) -> CmdResult<Vec<ModelHero>> {
+    let cat = catalog_of(&app).await?;
+    hero_model_list(&app, &cat)
+}
+
+#[tauri::command]
+async fn create_model_project(app: State<'_, App>, name: String, hero: String) -> CmdResult<ModelProject> {
+    let cat = catalog_of(&app).await?;
+    let heroes = hero_model_list(&app, &cat)?;
+    let h = heroes.iter().find(|h| h.code == hero).ok_or("That hero's model wasn't found in the game files")?;
+    let mut lib = app.lib.lock().unwrap();
+    let p = lib.create_model_project(&name, &h.code, &h.model).map_err(err)?;
+    lib.log(&format!("Created model project \"{}\" for {}", p.name, h.name));
+    Ok(p)
+}
+
+#[tauri::command]
+fn rename_model_project(app: State<App>, id: String, name: String) -> CmdResult<()> {
+    app.lib.lock().unwrap().rename_model_project(&id, &name).map_err(err)
+}
+
+#[tauri::command]
+fn delete_model_project(app: State<App>, id: String) -> CmdResult<()> {
+    let mut lib = app.lib.lock().unwrap();
+    let name = lib.model_project(&id).map(|p| p.name.clone()).unwrap_or_default();
+    lib.delete_model_project(&id).map_err(err)?;
+    lib.log(&format!("Deleted model project \"{name}\""));
+    Ok(())
+}
+
+/// What the extracted original contains (saved at extract time).
+#[tauri::command]
+fn model_summary(app: State<App>, id: String) -> CmdResult<Option<ModelSummary>> {
+    let lib = app.lib.lock().unwrap();
+    let p = lib.model_dir(&id).join("summary.json");
+    match std::fs::read(&p) {
+        Ok(b) => serde_json::from_slice(&b).map(Some).map_err(|e| e.to_string()),
+        Err(_) => Ok(None),
+    }
+}
+
+#[tauri::command]
+fn open_model_folder(app_handle: tauri::AppHandle, app: State<App>, id: String, which: String) -> CmdResult<()> {
+    let lib = app.lib.lock().unwrap();
+    let base = lib.model_dir(&id);
+    let path = match which.as_str() {
+        "blender" => base.join("blender"),
+        "return" => base.join("return"),
+        "original" => base.join("original"),
+        _ => base,
+    };
+    if !path.exists() {
+        return Err("Extract the hero first".into());
+    }
+    app_handle.opener().open_path(path.display().to_string(), None::<&str>).map_err(|e| e.to_string())
+}
+
+/// Download (once) and return Source 2 Viewer's command-line tool.
+fn ensure_s2v(tools_dir: &Path, progress: &dyn Fn(&str)) -> CmdResult<PathBuf> {
+    if let Some(p) = tools::s2v_exe(tools_dir) {
+        return Ok(p);
+    }
+    progress("Downloading Source 2 Viewer (53 MB, first time only)");
+    let resp = ureq::get(model::S2V_URL)
+        .call()
+        .map_err(|e| format!("Couldn't download Source 2 Viewer: {e}"))?;
+    let total: usize = resp.header("Content-Length").and_then(|v| v.parse().ok()).unwrap_or(0);
+    let mut reader = resp.into_reader();
+    let mut bytes = Vec::with_capacity(total);
+    let mut buf = vec![0u8; 1 << 16];
+    let mut last = 0;
+    loop {
+        let n = std::io::Read::read(&mut reader, &mut buf).map_err(|e| format!("Download interrupted: {e}"))?;
+        if n == 0 {
+            break;
+        }
+        bytes.extend_from_slice(&buf[..n]);
+        if let Some(pct) = (bytes.len() * 100).checked_div(total) {
+            if pct >= last + 5 {
+                last = pct;
+                progress(&format!("Downloading Source 2 Viewer: {pct}%"));
+            }
+        }
+    }
+    progress("Installing Source 2 Viewer");
+    tools::install_s2v(&bytes, tools_dir).map_err(err)
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ExtractResult {
+    report: ExtractReport,
+    project: ModelProject,
+}
+
+/// Take the project's hero apart: model source, meshes, Blender file.
+/// Progress goes out as `model-progress` events.
+#[tauri::command]
+async fn extract_model_project(app_handle: tauri::AppHandle, app: State<'_, App>, id: String) -> CmdResult<ExtractResult> {
+    let (project, game_dir, dir, tools_dir) = {
+        let lib = app.lib.lock().unwrap();
+        let p = lib.model_project(&id).map_err(err)?.clone();
+        (p, require_game_dir(&lib)?, lib.model_dir(&id), lib.root.join("tools"))
+    };
+    let h = app_handle.clone();
+    let model_path = project.model.clone();
+    let gd = game_dir.clone();
+    let report = tauri::async_runtime::spawn_blocking(move || -> CmdResult<ExtractReport> {
+        let say = |m: &str| {
+            let _ = h.emit("model-progress", m.to_string());
+        };
+        let s2v = ensure_s2v(&tools_dir, &say)?;
+        model::extract(&s2v, &gd, &model_path, &dir, &model::run_tool, &say).map_err(err)
+    })
+    .await
+    .map_err(|e| e.to_string())??;
+    let mut lib = app.lib.lock().unwrap();
+    lib.mark_extracted(&id, steam::build_id(&game_dir)).map_err(err)?;
+    lib.log(&format!(
+        "Extracted {} for \"{}\": {} bones, {} meshes, {} materials",
+        project.model,
+        project.name,
+        report.summary.bones.len(),
+        report.summary.meshes,
+        report.summary.materials.len()
+    ));
+    let project = lib.model_project(&id).map_err(err)?.clone();
+    Ok(ExtractResult { report, project })
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ModelBuildResult {
+    report: ModelBuildReport,
+    mod_id: String,
+    mod_name: String,
+}
+
+/// Rebuild the project's model with CSDK and add it to the library.
+#[tauri::command]
+async fn build_model_project(app_handle: tauri::AppHandle, app: State<'_, App>, id: String) -> CmdResult<ModelBuildResult> {
+    let (project, csdk_dir, game_dir, dir, out) = {
+        let lib = app.lib.lock().unwrap();
+        let p = lib.model_project(&id).map_err(err)?.clone();
+        let c = lib.state.settings.csdk_dir.clone().ok_or("Set the CSDK folder in Settings first")?;
+        let safe: String = p.name.chars().map(|c| if c.is_ascii_alphanumeric() || c == '-' { c } else { '_' }).collect();
+        let out = lib.root.join("builds").join(format!("{}_{}.vpk", safe.trim_matches('_'), &p.id[..4]));
+        (p.clone(), PathBuf::from(c), require_game_dir(&lib)?, lib.model_dir(&id), out)
+    };
+    if project.extracted.is_none() {
+        return Err("Extract the hero first".into());
+    }
+    if !steam_running() {
+        return Err("Start Steam first: CSDK's compiler needs it running.".into());
+    }
+    let slug = format!("{}_{}", project.name, &project.id[..4]);
+    let h = app_handle.clone();
+    let model_path = project.model.clone();
+    let report = tauri::async_runtime::spawn_blocking(move || {
+        model::build(&csdk_dir, &game_dir, &model_path, &dir, &slug, &out, &csdk::run_compiler, &|m| {
+            let _ = h.emit("model-progress", m.to_string());
+        })
+    })
+    .await
+    .map_err(|e| e.to_string())?
+    .map_err(err)?;
+    let mut lib = app.lib.lock().unwrap();
+    let mod_id = lib.store_model_build(&id, Path::new(&report.vpk), "Built in Model Builder").map_err(err)?;
+    let mod_name = lib.get(&mod_id).map(|m| m.name.clone()).unwrap_or_default();
+    lib.log(&format!("Built model mod \"{}\" ({} files, {} warning(s))", mod_name, report.files.len(), report.warnings.len()));
+    Ok(ModelBuildResult { report, mod_id, mod_name })
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -672,6 +878,14 @@ pub fn run() {
             set_voice_mute,
             sound_heroes,
             describe_sounds,
+            model_heroes,
+            create_model_project,
+            rename_model_project,
+            delete_model_project,
+            model_summary,
+            open_model_folder,
+            extract_model_project,
+            build_model_project,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Deadlock Mod Studio");

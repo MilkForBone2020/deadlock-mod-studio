@@ -115,6 +115,29 @@ pub struct SoundProject {
     pub last_built: Option<String>,
 }
 
+/// A hero model mod being made in the app. Its files live in
+/// `models/<id>/` in the data folder (see `model::extract`).
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelProject {
+    pub id: String,
+    pub name: String,
+    /// Hero code, e.g. `gigawatt`.
+    pub hero: String,
+    /// Game path of the model replaced, e.g. `models/heroes_staging/x/x.vmdl`.
+    pub model: String,
+    pub created: String,
+    /// When the original was last extracted, and from which game build.
+    #[serde(default)]
+    pub extracted: Option<String>,
+    #[serde(default)]
+    pub extracted_build: Option<String>,
+    #[serde(default)]
+    pub mod_id: Option<String>,
+    #[serde(default)]
+    pub last_built: Option<String>,
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct State {
@@ -134,6 +157,8 @@ pub struct State {
     pub safe_mode: Option<SafeModeEvent>,
     #[serde(default)]
     pub sound_projects: Vec<SoundProject>,
+    #[serde(default)]
+    pub model_projects: Vec<ModelProject>,
 }
 
 impl Default for State {
@@ -147,6 +172,7 @@ impl Default for State {
             last_build_id: None,
             safe_mode: None,
             sound_projects: Vec::new(),
+            model_projects: Vec::new(),
         }
     }
 }
@@ -648,6 +674,111 @@ impl Library {
         Ok(mod_id)
     }
 
+    // ----- Model projects -----
+
+    /// Where a model project's files live.
+    pub fn model_dir(&self, id: &str) -> PathBuf {
+        self.root.join("models").join(id)
+    }
+
+    pub fn model_project(&self, id: &str) -> Result<&ModelProject> {
+        self.state.model_projects.iter().find(|p| p.id == id).ok_or_else(|| Error::msg("That model project no longer exists"))
+    }
+
+    fn model_project_mut(&mut self, id: &str) -> Result<&mut ModelProject> {
+        self.state.model_projects.iter_mut().find(|p| p.id == id).ok_or_else(|| Error::msg("That model project no longer exists"))
+    }
+
+    pub fn create_model_project(&mut self, name: &str, hero: &str, model: &str) -> Result<ModelProject> {
+        let name = name.trim();
+        if name.is_empty() {
+            return Err(Error::msg("Give the model mod a name"));
+        }
+        if !model.starts_with("models/") || !model.ends_with(".vmdl") || model.contains("..") {
+            return Err(Error::msg(format!("{model} isn't a hero model")));
+        }
+        let p = ModelProject {
+            id: uuid::Uuid::new_v4().simple().to_string()[..12].to_string(),
+            name: name.to_string(),
+            hero: hero.trim().to_string(),
+            model: model.to_string(),
+            created: now(),
+            extracted: None,
+            extracted_build: None,
+            mod_id: None,
+            last_built: None,
+        };
+        std::fs::create_dir_all(self.model_dir(&p.id)).at(&self.root)?;
+        self.state.model_projects.push(p.clone());
+        self.save()?;
+        Ok(p)
+    }
+
+    pub fn rename_model_project(&mut self, id: &str, name: &str) -> Result<()> {
+        if name.trim().is_empty() {
+            return Err(Error::msg("Give the model mod a name"));
+        }
+        self.model_project_mut(id)?.name = name.trim().to_string();
+        self.save()
+    }
+
+    pub fn mark_extracted(&mut self, id: &str, build: Option<String>) -> Result<()> {
+        let p = self.model_project_mut(id)?;
+        p.extracted = Some(now());
+        p.extracted_build = build;
+        self.save()
+    }
+
+    /// Delete a project and its working files. Its built mod stays in the
+    /// library.
+    pub fn delete_model_project(&mut self, id: &str) -> Result<()> {
+        self.model_project(id)?;
+        let dir = self.model_dir(id);
+        if dir.exists() {
+            std::fs::remove_dir_all(&dir).at(&dir)?;
+        }
+        self.state.model_projects.retain(|p| p.id != id);
+        self.save()
+    }
+
+    /// Add a model build to the library (or replace the project's earlier
+    /// build, bumping its version). Returns the mod id.
+    pub fn store_model_build(&mut self, project_id: &str, vpk_path: &Path, notes: &str) -> Result<String> {
+        let p = self.model_project(project_id)?.clone();
+        let existing = p.mod_id.clone().filter(|m| self.state.mods.iter().any(|x| &x.id == m));
+        let mod_id = match existing {
+            Some(m) => {
+                self.replace_vpk(&m, vpk_path)?;
+                let entry = self.get_mut(&m)?;
+                entry.name = p.name.clone();
+                entry.hero = p.hero.clone();
+                entry.kind = ModKind::Skin;
+                entry.notes = notes.to_string();
+                let v: u32 = entry.version.parse().unwrap_or(1);
+                entry.version = (v + 1).to_string();
+                m
+            }
+            None => {
+                self.import_vpk(
+                    vpk_path,
+                    ModMeta {
+                        name: Some(p.name.clone()),
+                        kind: Some(ModKind::Skin),
+                        hero: Some(p.hero.clone()),
+                        notes: Some(notes.to_string()),
+                        version: Some("1".into()),
+                    },
+                )?
+                .id
+            }
+        };
+        let pm = self.model_project_mut(project_id)?;
+        pm.mod_id = Some(mod_id.clone());
+        pm.last_built = Some(now());
+        self.save()?;
+        Ok(mod_id)
+    }
+
     pub fn dismiss_safe_mode(&mut self) -> Result<()> {
         self.state.safe_mode = None;
         self.save()
@@ -851,5 +982,33 @@ mod tests {
         assert!(!path.exists());
         assert_eq!(lib.state.mods.len(), 1);
         assert!(lib.state.profiles[0].mods.is_empty());
+    }
+
+    #[test]
+    fn model_projects_build_into_a_skin_mod() {
+        let t = tempfile::tempdir().unwrap();
+        let mut lib = Library::open(t.path()).unwrap();
+        assert!(lib.create_model_project(" ", "gigawatt", "models/a/b.vmdl").is_err());
+        assert!(lib.create_model_project("x", "gigawatt", "sounds/a.vsnd").is_err());
+        let p = lib.create_model_project("Seven test", "gigawatt", "models/heroes_staging/gigawatt_prisoner/gigawatt_prisoner.vmdl").unwrap();
+        assert!(lib.model_dir(&p.id).is_dir());
+        lib.mark_extracted(&p.id, Some("123".into())).unwrap();
+        assert_eq!(lib.model_project(&p.id).unwrap().extracted_build.as_deref(), Some("123"));
+
+        let v1 = write_vpk(t.path(), "m1.vpk", &["models/heroes_staging/gigawatt_prisoner/gigawatt_prisoner.vmdl_c"]);
+        let id = lib.store_model_build(&p.id, &v1, "Built in Model Builder").unwrap();
+        let m = lib.get(&id).unwrap();
+        assert_eq!(m.kind, ModKind::Skin);
+        assert_eq!(m.hero, "gigawatt");
+        let id2 = lib.store_model_build(&p.id, &v1, "again").unwrap();
+        assert_eq!(id, id2);
+        assert_eq!(lib.get(&id).unwrap().version, "2");
+
+        // Reopen: saved. Delete: files gone, mod stays.
+        let mut lib = Library::open(t.path()).unwrap();
+        assert_eq!(lib.state.model_projects.len(), 1);
+        lib.delete_model_project(&p.id).unwrap();
+        assert!(!lib.model_dir(&p.id).exists());
+        assert!(lib.get(&id).is_ok());
     }
 }

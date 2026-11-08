@@ -111,6 +111,8 @@ lists what was switched off. Mods marked verified on the old build show
 | `library\` | The stored VPKs |
 | `backups\` | `gameinfo.gi` backups |
 | `logs\actions.log` | Every file the app moved, renamed or edited |
+| `models\` | Model Builder projects: the extracted hero, its Blender file and builds' inputs |
+| `tools\` | Source 2 Viewer's command-line tool, downloaded on first use |
 
 ## Project layout
 
@@ -127,3 +129,9 @@ Run the tests with:
 cd src-tauri
 cargo test -p modcore
 ```
+
+## Third-party code and tools
+
+- The binary KeyValues3 reader (`modcore/src/kv3.rs`) is ported from [ValveResourceFormat](https://github.com/ValveResourceFormat/ValveResourceFormat) (MIT licence).
+- Model Builder downloads Source 2 Viewer's command-line tool (MIT licence, by the ValveResourceFormat contributors) from its official GitHub release the first time a hero is extracted. The app pins version 20.1, checks the download's SHA-256 before unpacking it, and keeps it in `tools\` in the data folder.
+- Building uses Valve's CSDK resource compiler, which you install yourself.

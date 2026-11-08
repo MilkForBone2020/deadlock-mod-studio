@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { ApplyReport, BuildResult, HeroInfo, Level, ModMeta, Overview, Profile, SafeModeEvent, SoundProject, SoundSearch, SoundUse } from "./types";
+import type { ApplyReport, BuildResult, ExtractResult, HeroInfo, Level, ModelBuildResult, ModelHero, ModelProject, ModelSummary, ModMeta, Overview, Profile, SafeModeEvent, SoundProject, SoundSearch, SoundUse } from "./types";
 import { mockApi } from "./mock";
 
 /** False when the UI is opened in a plain browser (`npm run dev`) for design work. */
@@ -45,6 +45,14 @@ const tauriApi = {
   setProjectItem: (id: string, target: string, source: string) => invoke<void>("set_project_item", { id, target, source }),
   removeProjectItem: (id: string, target: string) => invoke<void>("remove_project_item", { id, target }),
   buildSoundProject: (id: string) => invoke<BuildResult>("build_sound_project", { id }),
+  modelHeroes: () => invoke<ModelHero[]>("model_heroes"),
+  createModelProject: (name: string, hero: string) => invoke<ModelProject>("create_model_project", { name, hero }),
+  renameModelProject: (id: string, name: string) => invoke<void>("rename_model_project", { id, name }),
+  deleteModelProject: (id: string) => invoke<void>("delete_model_project", { id }),
+  modelSummary: (id: string) => invoke<ModelSummary | null>("model_summary", { id }),
+  openModelFolder: (id: string, which: "blender" | "return" | "original" | "project") => invoke<void>("open_model_folder", { id, which }),
+  extractModelProject: (id: string) => invoke<ExtractResult>("extract_model_project", { id }),
+  buildModelProject: (id: string) => invoke<ModelBuildResult>("build_model_project", { id }),
 };
 
 export type Api = typeof tauriApi;

@@ -6,14 +6,16 @@ import type { Action, Overview } from "./types";
 import { LibraryView } from "./LibraryView";
 import { ActivityView, ProfilesView, SettingsView } from "./OtherViews";
 import { AUDIO_EXTS, SoundBuilderView } from "./SoundBuilder";
+import { ModelBuilderView } from "./ModelBuilder";
 import { Icon, Modal, Toasts, type Toast } from "./ui";
 import { useUpdater, type Updater } from "./updater";
 
-type View = "library" | "sounds" | "profiles" | "activity" | "settings";
+type View = "library" | "sounds" | "models" | "profiles" | "activity" | "settings";
 
 const NAV: { id: View; label: string; icon: string }[] = [
   { id: "library", label: "Library", icon: "library" },
   { id: "sounds", label: "Sound Builder", icon: "wave" },
+  { id: "models", label: "Model Builder", icon: "cube" },
   { id: "profiles", label: "Profiles", icon: "profiles" },
   { id: "activity", label: "Activity", icon: "activity" },
   { id: "settings", label: "Settings", icon: "settings" },
@@ -277,6 +279,16 @@ export default function App() {
               ov={ov}
               act={act}
               dropRef={soundDrop}
+              goTo={(v, modId) => {
+                setView(v);
+                if (modId) setSelectedId(modId);
+              }}
+            />
+          )}
+          {view === "models" && (
+            <ModelBuilderView
+              ov={ov}
+              act={act}
               goTo={(v, modId) => {
                 setView(v);
                 if (modId) setSelectedId(modId);

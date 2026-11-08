@@ -1,0 +1,392 @@
+import { useEffect, useState } from "react";
+import { listen } from "@tauri-apps/api/event";
+import { api, errorText, isTauri } from "./api";
+import type { ModelBuildResult, ModelHero, ModelProject, ModelSummary, Overview } from "./types";
+import { formatDate, formatSize, Icon, Modal } from "./ui";
+
+type Act = (fn: () => Promise<unknown>, ok?: string) => Promise<boolean>;
+
+/** Hero models from the game's data (loaded once). */
+function useModelHeroes() {
+  const [heroes, setHeroes] = useState<ModelHero[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => {
+    api
+      .modelHeroes()
+      .then((h) => setHeroes([...h].sort((a, b) => a.name.localeCompare(b.name))))
+      .catch((e) => setError(errorText(e)));
+  }, []);
+  return { heroes, error };
+}
+
+function shortPath(p: string) {
+  return (p.split("/").pop() ?? p).replace(/\.(vmat|vmdl)$/, "");
+}
+
+function status(p: ModelProject) {
+  if (p.lastBuilt) return "built";
+  if (p.extracted) return "extracted";
+  return "not extracted";
+}
+
+export function ModelBuilderView({
+  ov,
+  act,
+  goTo,
+}: {
+  ov: Overview;
+  act: Act;
+  goTo: (view: "library" | "settings", modId?: string) => void;
+}) {
+  const [selectedId, setSelectedId] = useState<string | null>(ov.modelProjects[0]?.id ?? null);
+  const [newName, setNewName] = useState("");
+  const [newHero, setNewHero] = useState("");
+  const { heroes, error } = useModelHeroes();
+  const project = ov.modelProjects.find((p) => p.id === selectedId) ?? null;
+  const heroName = (code: string) => heroes?.find((h) => h.code === code)?.name ?? code;
+
+  useEffect(() => {
+    if (!project && ov.modelProjects.length) setSelectedId(ov.modelProjects[0].id);
+  }, [project, ov.modelProjects]);
+
+  return (
+    <div className="builder">
+      <aside className="builder-list">
+        <div className="builder-list-head">
+          <h1>Model Builder</h1>
+          <p className="sub">Replace a hero's model with your own.</p>
+        </div>
+        <ul className="project-list">
+          {ov.modelProjects.map((p) => (
+            <li key={p.id}>
+              <button className={`project-item ${p.id === selectedId ? "active" : ""}`} onClick={() => setSelectedId(p.id)}>
+                <span className="pi-name">{p.name}</span>
+                <span className="pi-meta">
+                  {heroName(p.hero)} · {status(p)}
+                </span>
+              </button>
+            </li>
+          ))}
+        </ul>
+        <form
+          className="new-project"
+          onSubmit={async (e) => {
+            e.preventDefault();
+            let created: ModelProject | null = null;
+            const ok = await act(async () => {
+              created = await api.createModelProject(newName, newHero);
+            });
+            if (ok && created) {
+              setSelectedId((created as ModelProject).id);
+              setNewName("");
+            }
+          }}
+        >
+          <strong>New model mod</strong>
+          <input value={newName} placeholder="Name, e.g. Seven in a suit" onChange={(e) => setNewName(e.target.value)} aria-label="New model mod name" />
+          <select value={newHero} onChange={(e) => setNewHero(e.target.value)} aria-label="Hero">
+            <option value="">{heroes ? "Pick a hero" : error ? "Couldn't read heroes" : "Loading heroes…"}</option>
+            {heroes?.map((h) => (
+              <option key={h.code} value={h.code}>
+                {h.name}
+              </option>
+            ))}
+          </select>
+          <button className="btn primary small" disabled={!newName.trim() || !newHero}>
+            <Icon name="plus" size={14} /> Create
+          </button>
+        </form>
+      </aside>
+
+      <section className="builder-main">
+        {!ov.csdkFound && (
+          <div className="banner warn inline" role="status">
+            <Icon name="warn" size={20} />
+            <div>
+              <strong>CSDK isn't set up</strong>
+              <p>Building needs CSDK 13's compiler. Set its folder in Settings.</p>
+            </div>
+            <button className="btn small" onClick={() => goTo("settings")}>Open Settings</button>
+          </div>
+        )}
+        {project ? (
+          <ModelEditor key={project.id} p={project} ov={ov} act={act} heroName={heroName(project.hero)} goTo={goTo} />
+        ) : (
+          <div className="empty">
+            <div className="empty-mark">
+              <Icon name="layers" size={30} />
+            </div>
+            <h2>Make your first model mod</h2>
+            <ol className="steps">
+              <li>Name it in <strong>New model mod</strong> on the left, pick the hero and click <strong>Create</strong>.</li>
+              <li>Click <strong>Extract</strong>. The app takes the hero's model apart and makes a file for Blender.</li>
+              <li>Click <strong>Build test mod</strong> to rebuild the hero unchanged and check it in game.</li>
+            </ol>
+            <p className="hint">Sending your edited model back from Blender comes next, once the test build works.</p>
+          </div>
+        )}
+      </section>
+    </div>
+  );
+}
+
+function ModelEditor({
+  p,
+  ov,
+  act,
+  heroName,
+  goTo,
+}: {
+  p: ModelProject;
+  ov: Overview;
+  act: Act;
+  heroName: string;
+  goTo: (view: "library" | "settings", modId?: string) => void;
+}) {
+  const [name, setName] = useState(p.name);
+  const [busy, setBusy] = useState<{ title: string; step: string } | null>(null);
+  const [summary, setSummary] = useState<ModelSummary | null>(null);
+  const [result, setResult] = useState<ModelBuildResult | null>(null);
+  const [confirmDelete, setConfirmDelete] = useState(false);
+
+  useEffect(() => {
+    if (!p.extracted) return setSummary(null);
+    api.modelSummary(p.id).then(setSummary).catch(() => setSummary(null));
+  }, [p.id, p.extracted]);
+
+  const builtMod = ov.mods.find((m) => m.id === p.modId) ?? null;
+  const outdated = !!p.extracted && !!p.extractedBuild && !!ov.game.buildId && p.extractedBuild !== ov.game.buildId;
+
+  const run = async (title: string, fn: () => Promise<void>) => {
+    setBusy({ title, step: "Starting…" });
+    const un = isTauri ? await listen<string>("model-progress", (e) => setBusy({ title, step: e.payload })) : () => undefined;
+    try {
+      await fn();
+    } finally {
+      un();
+      setBusy(null);
+    }
+  };
+
+  const extract = () =>
+    run(`Extracting ${heroName}`, async () => {
+      await act(async () => {
+        const r = await api.extractModelProject(p.id);
+        setSummary(r.report.summary);
+      }, `${heroName} extracted`);
+    });
+
+  const build = () =>
+    run(`Building "${p.name}"`, async () => {
+      let r: ModelBuildResult | null = null;
+      const ok = await act(async () => {
+        r = await api.buildModelProject(p.id);
+      });
+      if (ok && r) setResult(r);
+    });
+
+  return (
+    <div className="editor">
+      <div className="editor-head">
+        <div className="form-row">
+          <label>
+            Name
+            <input value={name} onChange={(e) => setName(e.target.value)} onBlur={() => name !== p.name && act(() => api.renameModelProject(p.id, name))} />
+          </label>
+          <label>
+            Hero
+            <input value={heroName} disabled title={p.model} />
+          </label>
+        </div>
+        <div className="head-actions">
+          {confirmDelete ? (
+            <span className="confirm">
+              Delete project and its files?
+              <button className="btn danger small" onClick={() => act(() => api.deleteModelProject(p.id), `Deleted "${p.name}"`)}>Delete</button>
+              <button className="btn ghost small" onClick={() => setConfirmDelete(false)}>Cancel</button>
+            </span>
+          ) : (
+            <button className="icon-btn" aria-label="Delete project" title="Delete project (the built mod stays in your library)" onClick={() => setConfirmDelete(true)}>
+              <Icon name="trash" />
+            </button>
+          )}
+        </div>
+      </div>
+
+      <ol className="model-steps">
+        <li className={`model-step ${p.extracted ? "done" : "current"}`}>
+          <div className="ms-num">{p.extracted ? <Icon name="check" size={14} /> : 1}</div>
+          <div className="ms-body">
+            <strong>Extract {heroName}</strong>
+            {p.extracted ? (
+              <span className="hint">
+                Extracted {formatDate(p.extracted)}
+                {p.extractedBuild ? ` from game build ${p.extractedBuild}` : ""}.
+              </span>
+            ) : (
+              <span className="hint">
+                Takes the hero's model apart into an editable source, mesh files and a Blender file. About a minute.
+                {!ov.s2vInstalled && " The first time, it downloads Source 2 Viewer's command-line tool (53 MB, MIT licence) from its official GitHub release."}
+              </span>
+            )}
+            {outdated && (
+              <span className="ms-warn">
+                <Icon name="warn" size={14} /> The game has updated since this was extracted. Extract again before building.
+              </span>
+            )}
+          </div>
+          <button className={`btn ${p.extracted && !outdated ? "" : "primary"}`} disabled={!!busy || !ov.game.found} onClick={extract}>
+            {p.extracted ? "Extract again" : "Extract"}
+          </button>
+        </li>
+
+        <li className={`model-step ${!p.extracted ? "later" : ""}`}>
+          <div className="ms-num">2</div>
+          <div className="ms-body">
+            <strong>Open in Blender</strong>
+            <span className="hint">
+              In Blender 4.2: <em>File › Import › glTF 2.0</em> and pick the <code>.glb</code> in this folder. It has every mesh, the
+              full skeleton, materials and a few animations for testing poses.
+            </span>
+          </div>
+          <button className="btn" disabled={!p.extracted} onClick={() => act(() => api.openModelFolder(p.id, "blender"))}>
+            <Icon name="folder" size={14} /> Open folder
+          </button>
+        </li>
+
+        <li className={`model-step ${!p.extracted ? "later" : p.lastBuilt ? "done" : "current"}`}>
+          <div className="ms-num">{p.lastBuilt ? <Icon name="check" size={14} /> : 3}</div>
+          <div className="ms-body">
+            <strong>Build test mod</strong>
+            <span className="hint">
+              Rebuilds {heroName} unchanged from the extracted files, to prove the whole pipeline works in game before any
+              edits. Needs CSDK and Steam running. Cloth (sleeves, straps, cables) stays still in this test: the current
+              Source 2 Viewer can't rebuild cloth yet.
+            </span>
+          </div>
+          <button className="btn primary" disabled={!p.extracted || !ov.csdkFound || !!busy || outdated} onClick={build}>
+            {p.lastBuilt ? "Rebuild" : "Build test mod"}
+          </button>
+        </li>
+      </ol>
+
+      {summary && <SummaryCard s={summary} heroName={heroName} openSource={() => act(() => api.openModelFolder(p.id, "original"))} />}
+
+      <div className="build-bar">
+        <div>
+          {builtMod ? (
+            <>
+              <strong>In your library as "{builtMod.name}" (v{builtMod.version})</strong>
+              <span>Rebuilding updates that mod. It stays on or off as it is.</span>
+            </>
+          ) : (
+            <>
+              <strong>Not built yet</strong>
+              <span>{p.extracted ? "Build the test mod, switch it on and check the hero in game." : "Extract the hero to start."}</span>
+            </>
+          )}
+        </div>
+        {builtMod && (
+          <button className="btn ghost" onClick={() => goTo("library", builtMod.id)}>Show in Library</button>
+        )}
+      </div>
+
+      {busy && (
+        <div className="modal-backdrop">
+          <div className="modal progress-modal" role="status">
+            <div className="spinner" />
+            <strong>{busy.title}</strong>
+            <span>{busy.step}</span>
+          </div>
+        </div>
+      )}
+      {result && <ModelReportModal r={result} heroName={heroName} close={() => setResult(null)} goLibrary={() => goTo("library", result.modId)} />}
+    </div>
+  );
+}
+
+function SummaryCard({ s, heroName, openSource }: { s: ModelSummary; heroName: string; openSource: () => void }) {
+  const stats: [string, string][] = [
+    ["Bones", `${s.bones.length}`],
+    ["Meshes", `${s.meshes} (${s.lods} detail levels)`],
+    ["Triangles", `${Math.round(s.trianglesLod0 / 1000)}k at full detail`],
+    ["Materials", `${s.materials.length}`],
+    ["Attachment points", `${s.attachments.length}`],
+    ["Hitboxes", `${s.hitboxes}`],
+    ["Ragdoll bodies", `${s.ragdollBodies}`],
+    ["Cloth points", s.clothNodes ? `${s.clothNodes}` : "none"],
+  ];
+  return (
+    <section className="voice-card">
+      <div className="items-head">
+        <h3>What {heroName}'s model has</h3>
+        <button className="btn ghost small" onClick={openSource}>
+          <Icon name="folder" size={14} /> Model source
+        </button>
+      </div>
+      <dl className="stat-grid">
+        {stats.map(([k, v]) => (
+          <div key={k}>
+            <dt>{k}</dt>
+            <dd>{v}</dd>
+          </div>
+        ))}
+      </dl>
+      {s.bodyGroups.length > 0 && (
+        <p className="hint">
+          <strong>Body groups:</strong> {s.bodyGroups.map((g) => g.replace(/^DEFAULT: /, "")).join(", ")}. A custom model needs a version for each.
+        </p>
+      )}
+      <p className="hint">
+        <strong>Materials:</strong> {s.materials.map(shortPath).join(", ")}
+      </p>
+      <details>
+        <summary>Bone and attachment names</summary>
+        <p className="hint mono-list">
+          <strong>Bones:</strong> {s.bones.join(", ")}
+        </p>
+        <p className="hint mono-list">
+          <strong>Attachments:</strong> {s.attachments.join(", ")}
+        </p>
+      </details>
+    </section>
+  );
+}
+
+function ModelReportModal({ r, heroName, close, goLibrary }: { r: ModelBuildResult; heroName: string; close: () => void; goLibrary: () => void }) {
+  return (
+    <Modal
+      title="Model mod built"
+      onClose={close}
+      footer={
+        <>
+          <span className="hint">Switch it on, Apply & launch, and check {heroName} in game.</span>
+          <button className="btn ghost" onClick={close}>Close</button>
+          <button className="btn primary" onClick={() => { close(); goLibrary(); }}>Go to Library</button>
+        </>
+      }
+    >
+      <p>
+        <strong>"{r.modName}"</strong>: {r.report.files.length} file(s), {formatSize(r.report.vpkSize)}.
+      </p>
+      <p className="hint">What to check in game (Hero Labs or a bot match): {heroName} looks normal, every animation plays, the gun hides during the ult, and the hero shows in the menus.</p>
+      <ul className="file-list">
+        {r.report.files.map((f) => (
+          <li key={f}>
+            <code>{f}</code>
+          </li>
+        ))}
+      </ul>
+      {r.report.warnings.length > 0 && (
+        <>
+          <h3>Compiler warnings ({r.report.warnings.length})</h3>
+          <pre className="log-pre">{r.report.warnings.join("\n")}</pre>
+        </>
+      )}
+      <details>
+        <summary>Compiler output</summary>
+        <pre className="log-pre">{r.report.log}</pre>
+      </details>
+    </Modal>
+  );
+}

@@ -4,7 +4,7 @@
 //!
 //! Ported from ValveResourceFormat's `BinaryKV3.cs` (MIT licence,
 //! Copyright (c) 2015 ValveResourceFormat Contributors). Read-only, and
-//! LZ4-compressed binary blobs (unused by sound events) are not supported.
+//! Binary blob contents are not decoded (blob nodes parse as empty).
 
 use crate::{Error, Result};
 
@@ -222,10 +222,9 @@ pub fn parse(data: &[u8]) -> Result<Kv> {
         h.i32()?;
     }
     let _ = size_block_sizes;
-    if count_blocks > 0 {
-        return Err(bad("binary blobs are not supported"));
-    }
-    let _ = size_blobs;
+    // Blob contents (mesh/physics payloads) aren't decoded: blob nodes come
+    // back empty, which is fine for reading names and settings.
+    let _ = (count_blocks, size_blobs);
 
     // Buffer 1
     let input1 = h.take(sc1.min(h.d.len()))?;
@@ -398,7 +397,7 @@ fn read_value(c: &mut Ctx, t: u8, aux: bool) -> Result<Kv> {
             Kv::Blob(c.buf.b1.take(n)?.to_vec())
         }
         7 => {
-            let b = c.blobs.get(c.next_blob).cloned().ok_or_else(|| bad("missing blob"))?;
+            let b = c.blobs.get(c.next_blob).cloned().unwrap_or_default();
             c.next_blob += 1;
             Kv::Blob(b)
         }

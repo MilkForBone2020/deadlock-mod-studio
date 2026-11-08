@@ -72,6 +72,8 @@ export interface Overview {
   dataDir: string;
   soundProjects: SoundProject[];
   csdkFound: boolean;
+  modelProjects: ModelProject[];
+  s2vInstalled: boolean;
 }
 
 export interface SoundJob {
@@ -167,4 +169,47 @@ export interface ModMeta {
   hero?: string;
   notes?: string;
   version?: string;
+}
+
+export interface ModelHero {
+  code: string;
+  name: string;
+  model: string;
+}
+
+export interface ModelProject {
+  id: string;
+  name: string;
+  hero: string;
+  model: string;
+  created: string;
+  extracted: string | null;
+  extractedBuild: string | null;
+  modId: string | null;
+  lastBuilt: string | null;
+}
+
+export interface ModelSummary {
+  bones: string[];
+  meshes: number;
+  lods: number;
+  bodyGroups: string[];
+  materials: string[];
+  attachments: string[];
+  hitboxes: number;
+  ragdollBodies: number;
+  clothNodes: number;
+  animGraphs: string[];
+  trianglesLod0: number;
+}
+
+export interface ExtractResult {
+  report: { summary: ModelSummary; blenderFile: string; template: string; meshFiles: string[]; log: string };
+  project: ModelProject;
+}
+
+export interface ModelBuildResult {
+  report: { vpk: string; vpkSize: number; files: string[]; warnings: string[]; log: string };
+  modId: string;
+  modName: string;
 }
