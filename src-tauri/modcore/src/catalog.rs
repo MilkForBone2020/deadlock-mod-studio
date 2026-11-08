@@ -216,6 +216,30 @@ impl Catalog {
             }
         }
 
+        // Ability data: every sound event an ability (or its modifiers) names.
+        // event name (lowercase) -> (hero, slot)
+        let mut event_owner: HashMap<String, (String, u8)> = HashMap::new();
+        if let Some(e) = dir.find("scripts/abilities.vdata_c") {
+            match dir.extract(e).ok().and_then(|b| kv3::parse_resource(&b).ok()) {
+                Some(kv) => {
+                    for h in heroes.values() {
+                        for a in &h.abilities {
+                            if let Some(node) = kv.get(&a.key) {
+                                let mut strs = Vec::new();
+                                node.strings(&mut strs);
+                                for st in strs {
+                                    if st.contains('.') && !st.contains('/') && !st.contains(' ') {
+                                        event_owner.entry(st.to_lowercase()).or_insert((h.code.clone(), a.slot));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                None => cat.skipped.push("scripts/abilities.vdata_c".into()),
+            }
+        }
+
         // Sound events.
         let files: Vec<_> = dir
             .entries
@@ -252,35 +276,30 @@ impl Catalog {
                     parts.first().map(|p| p.to_lowercase()).filter(|p| heroes.contains_key(p))
                 });
                 let hero = hero_code.as_ref().and_then(|c| heroes.get(c));
-                let mut slot = None;
-                let mut ability_name = None;
-                let mut part_from = 1usize.min(parts.len());
-                if let Some(h) = hero {
-                    'outer: for (i, p) in parts.iter().enumerate() {
-                        let pn = norm(p);
-                        for a in &h.abilities {
-                            if !pn.is_empty() && pn == ability_norm(&a.key, &h.code) {
-                                slot = Some(a.slot);
-                                ability_name = Some(a.name.clone());
-                                part_from = i + 1;
-                                break 'outer;
-                            }
-                        }
-                    }
-                    // Unmatched ult events still say so in their base.
-                    if slot.is_none() {
-                        let base = ev.get("base").and_then(|b| b.as_str()).unwrap_or("");
-                        if base.contains(".Ult") {
-                            if let Some(a) = h.abilities.iter().find(|a| a.slot == 4) {
-                                slot = Some(4);
-                                ability_name = Some(a.name.clone());
-                            }
-                        }
-                    }
-                }
+                // The ability data is authoritative; it can also name the hero.
+                let owner = event_owner.get(&event.to_lowercase()).cloned();
+                let hero = owner.as_ref().and_then(|(c, _)| heroes.get(c)).or(hero);
+                let base = ev.get("base").and_then(|b| b.as_str()).unwrap_or("");
+                let (slot, drop) = match (&owner, hero) {
+                    (Some((_, s)), Some(h)) => (Some(*s), match_ability(&parts, h).map(|m| m.1).unwrap_or_default()),
+                    (None, Some(h)) => match match_ability(&parts, h) {
+                        Some((s, d)) => (Some(s), d),
+                        None if base.contains(".Ult") && h.abilities.iter().any(|a| a.slot == 4) => (Some(4), vec![]),
+                        None => (folder_slot(&paths), vec![]),
+                    },
+                    _ => (None, vec![]),
+                };
+                let ability_name = slot.and_then(|s| hero.and_then(|h| h.abilities.iter().find(|a| a.slot == s)).map(|a| a.name.clone()));
                 let category = if slot.is_some() { "Ability".to_string() } else { category_for(event, file_dir) };
-                let rest: Vec<&str> = parts.get(part_from..).map(|r| r.to_vec()).unwrap_or_default();
-                let part = if rest.is_empty() { humanize(&parts[1.min(parts.len())..]) } else { humanize(&rest) };
+                // Part: the event name minus the hero prefix, slot markers and
+                // the ability's own name.
+                let rest: Vec<&str> = parts
+                    .iter()
+                    .enumerate()
+                    .filter(|(i, p)| *i > 0 && !drop.contains(i) && slot_marker(p).is_none())
+                    .map(|(_, p)| *p)
+                    .collect();
+                let part = if rest.is_empty() { "Main".to_string() } else { humanize(&rest) };
                 let u = SoundUse {
                     hero: hero.map(|h| h.code.clone()).unwrap_or_default(),
                     hero_name: hero.map(|h| h.name.clone()).unwrap_or_default(),
@@ -314,13 +333,87 @@ impl Catalog {
                 }
             }
         }
-        cat.heroes = heroes.into_values().collect();
+        // Only heroes that actually have sounds (hides test and unreleased
+        // entries like "targetdummy").
+        let with_sounds: std::collections::HashSet<String> =
+            cat.uses.values().flatten().map(|u| u.hero.clone()).filter(|h| !h.is_empty()).collect();
+        cat.heroes = heroes.into_values().filter(|h| with_sounds.contains(&h.code)).collect();
         cat
     }
 
     pub fn uses_of(&self, path: &str) -> &[SoundUse] {
         self.uses.get(path).map(|v| v.as_slice()).unwrap_or(&[])
     }
+}
+
+/// `A1`..`A4` in an event name marks the ability slot directly.
+fn slot_marker(part: &str) -> Option<u8> {
+    let p = part.as_bytes();
+    if p.len() == 2 && (p[0] == b'A' || p[0] == b'a') && (b'1'..=b'4').contains(&p[1]) {
+        Some(p[1] - b'0')
+    } else {
+        None
+    }
+}
+
+/// Words too generic to identify an ability on their own.
+const STOP: &[&str] = &[
+    "cast", "hit", "impact", "start", "end", "stop", "loop", "lp", "proj", "projectile", "modifier", "mod", "explo",
+    "explode", "explosion", "detonate", "proc", "lp2", "fire", "wpn", "whizby", "victim", "target", "self", "other",
+    "enemy", "ally", "charge", "channel", "activate", "deactivate", "ready", "select", "unselect", "buff", "debuff",
+    "damage", "aoe", "duration", "dur", "tick", "warning", "alert", "confirm", "begin", "exit", "enter", "shoot",
+];
+
+/// Find which of the hero's abilities an event name refers to. Returns the
+/// slot and which name parts spelled it (to leave out of the "part" label).
+fn match_ability(parts: &[&str], h: &HeroInfo) -> Option<(u8, Vec<usize>)> {
+    for (i, p) in parts.iter().enumerate() {
+        if let Some(s) = slot_marker(p) {
+            if h.abilities.iter().any(|a| a.slot == s) {
+                return Some((s, vec![i]));
+            }
+        }
+    }
+    let names: Vec<(u8, String, String)> =
+        h.abilities.iter().map(|a| (a.slot, ability_norm(&a.key, &h.code), norm(&a.name))).collect();
+    // Exact match on 1–3 consecutive parts (e.g. Wrecking + Ball).
+    for len in (1..=3).rev() {
+        for start in 1..parts.len() {
+            if start + len > parts.len() {
+                break;
+            }
+            let joined = norm(&parts[start..start + len].concat());
+            if joined.len() < 3 {
+                continue;
+            }
+            if let Some((s, _, _)) = names.iter().find(|(_, k, n)| &joined == k || &joined == n) {
+                return Some((*s, (start..start + len).collect()));
+            }
+        }
+    }
+    // A distinctive word contained in the ability's name (Flask in
+    // Alchemical Flask, Grenade in Consecrating Grenade).
+    for (i, p) in parts.iter().enumerate().skip(1) {
+        let pn = norm(p);
+        if pn.len() < 4 || STOP.contains(&pn.as_str()) {
+            continue;
+        }
+        let hits: Vec<_> = names.iter().filter(|(_, k, n)| k.contains(&pn) || n.contains(&pn)).collect();
+        if hits.len() == 1 {
+            return Some((hits[0].0, vec![i]));
+        }
+    }
+    None
+}
+
+/// Seven-style folders: `sounds/abilities/<hero>/a4_storm_cloud/...`
+fn folder_slot(paths: &[String]) -> Option<u8> {
+    paths.iter().find_map(|p| {
+        p.split('/').find_map(|seg| {
+            let b = seg.as_bytes();
+            (b.len() > 2 && b[0] == b'a' && (b'1'..=b'4').contains(&b[1]) && b[2] == b'_').then(|| b[1] - b'0')
+        })
+    })
 }
 
 /// `necro_ping_careful_gigawatt_02_ping_2d` -> "Ping careful gigawatt"
@@ -348,8 +441,11 @@ fn voice_part(event: &str, speaker: &str) -> String {
 /// `sounds/vo/gigawatt/gigawatt_use_power4_02.vsnd_c` -> Some(4)
 fn use_power_slot(path: &str, hero: &str) -> Option<u8> {
     let name = path.rsplit('/').next()?;
-    let rest = name.strip_prefix(&format!("{hero}_use_power"))?;
-    let d = rest.chars().next()?.to_digit(10)? as u8;
+    if !name.starts_with(hero) {
+        return None;
+    }
+    let i = name.find("_use_power")?;
+    let d = name[i + "_use_power".len()..].chars().next()?.to_digit(10)? as u8;
     (1..=4).contains(&d).then_some(d)
 }
 
@@ -357,10 +453,16 @@ fn use_power_slot(path: &str, hero: &str) -> Option<u8> {
 /// `sounds/vo/gigawatt/gigawatt_use_power4_03.vsnd_c` and the
 /// `..._use_power4_as_enemy_..` lines heard when they are on the other team.
 pub fn voice_lines(dir: &Directory, hero: &str, slot: u8) -> Vec<String> {
-    let prefix = format!("sounds/vo/{hero}/{hero}_use_power{slot}_");
+    let folder = format!("sounds/vo/{hero}/");
+    let tag = format!("_use_power{slot}_");
     dir.entries
         .iter()
-        .filter(|e| e.path.starts_with(&prefix) && e.path.ends_with(".vsnd_c"))
+        .filter(|e| {
+            e.path.starts_with(&folder)
+                && e.path.ends_with(".vsnd_c")
+                && !e.path[folder.len()..].contains('/')
+                && e.path.rsplit('/').next().is_some_and(|n| n.starts_with(hero) && n.contains(&tag))
+        })
         .map(|e| e.path.clone())
         .collect()
 }
@@ -379,6 +481,21 @@ mod tests {
         assert_eq!(voice_part("necro_ping_careful_gigawatt_02_ping_2d", "necro"), "Ping careful gigawatt");
         assert_eq!(use_power_slot("sounds/vo/gigawatt/gigawatt_use_power4_02.vsnd_c", "gigawatt"), Some(4));
         assert_eq!(use_power_slot("sounds/vo/gigawatt/gigawatt_happy_02.vsnd_c", "gigawatt"), None);
+        assert_eq!(use_power_slot("sounds/vo/magician/magician_henry_use_power3_01.vsnd_c", "magician"), Some(3));
+        assert_eq!(slot_marker("A3"), Some(3));
+        assert_eq!(slot_marker("A5"), None);
+        assert_eq!(folder_slot(&["sounds/abilities/gigawatt/a4_storm_cloud/end.vsnd_c".into()]), Some(4));
+        let h = HeroInfo {
+            code: "warden".into(),
+            name: "Warden".into(),
+            abilities: vec![
+                AbilityInfo { slot: 1, key: "citadel_ability_warden_flask".into(), name: "Alchemical Flask".into(), voice_lines: 0 },
+                AbilityInfo { slot: 4, key: "citadel_ability_last_stand".into(), name: "Last Stand".into(), voice_lines: 0 },
+            ],
+        };
+        assert_eq!(match_ability(&["Warden", "Flask", "Cast"], &h).map(|m| m.0), Some(1));
+        assert_eq!(match_ability(&["Warden", "Last", "Stand", "Lp"], &h), Some((4, vec![1, 2])));
+        assert_eq!(match_ability(&["Warden", "Cast"], &h), None);
     }
 
     #[test]
