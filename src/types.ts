@@ -74,6 +74,7 @@ export interface Overview {
   csdkFound: boolean;
   modelProjects: ModelProject[];
   s2vInstalled: boolean;
+  s2vVersion: string;
 }
 
 export interface SoundJob {
@@ -185,6 +186,7 @@ export interface ModelProject {
   created: string;
   extracted: string | null;
   extractedBuild: string | null;
+  extractedTool: string | null;
   modId: string | null;
   lastBuilt: string | null;
 }
@@ -204,7 +206,7 @@ export interface ModelSummary {
 }
 
 export interface ExtractResult {
-  report: { summary: ModelSummary; blenderFile: string; template: string; meshFiles: string[]; log: string };
+  report: { summary: ModelSummary; blenderFile: string; template: string; meshFiles: string[]; clothMissing: boolean; log: string };
   project: ModelProject;
 }
 

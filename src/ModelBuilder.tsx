@@ -156,6 +156,7 @@ function ModelEditor({
 
   const builtMod = ov.mods.find((m) => m.id === p.modId) ?? null;
   const outdated = !!p.extracted && !!p.extractedBuild && !!ov.game.buildId && p.extractedBuild !== ov.game.buildId;
+  const oldTool = !!p.extracted && p.extractedTool !== ov.s2vVersion;
 
   const run = async (title: string, fn: () => Promise<void>) => {
     setBusy({ title, step: "Starting…" });
@@ -170,10 +171,13 @@ function ModelEditor({
 
   const extract = () =>
     run(`Extracting ${heroName}`, async () => {
-      await act(async () => {
+      let cloth = false;
+      const ok = await act(async () => {
         const r = await api.extractModelProject(p.id);
         setSummary(r.report.summary);
+        cloth = r.report.clothMissing;
       }, `${heroName} extracted`);
+      if (ok && cloth) void act(() => Promise.reject(`${heroName}'s cloth couldn't be rebuilt from the original, so it won't move in this build.`));
     });
 
   const build = () =>
@@ -226,7 +230,7 @@ function ModelEditor({
             ) : (
               <span className="hint">
                 Takes the hero's model apart into an editable source, mesh files and a Blender file. About a minute.
-                {!ov.s2vInstalled && " The first time, it downloads Source 2 Viewer's command-line tool (53 MB, MIT licence) from its official GitHub release."}
+                {!ov.s2vInstalled && " The first time, it downloads Source 2 Viewer's command-line tool (60 MB, MIT licence), built from its official source."}
               </span>
             )}
             {outdated && (
@@ -234,8 +238,13 @@ function ModelEditor({
                 <Icon name="warn" size={14} /> The game has updated since this was extracted. Extract again before building.
               </span>
             )}
+            {!outdated && oldTool && (
+              <span className="ms-warn">
+                <Icon name="warn" size={14} /> Extracted with an older Source 2 Viewer that couldn't rebuild cloth. Extract again to get working cloth.
+              </span>
+            )}
           </div>
-          <button className={`btn ${p.extracted && !outdated ? "" : "primary"}`} disabled={!!busy || !ov.game.found} onClick={extract}>
+          <button className={`btn ${p.extracted && !outdated && !oldTool ? "" : "primary"}`} disabled={!!busy || !ov.game.found} onClick={extract}>
             {p.extracted ? "Extract again" : "Extract"}
           </button>
         </li>
@@ -260,8 +269,7 @@ function ModelEditor({
             <strong>Build test mod</strong>
             <span className="hint">
               Rebuilds {heroName} unchanged from the extracted files, to prove the whole pipeline works in game before any
-              edits. Needs CSDK and Steam running. Cloth (sleeves, straps, cables) stays still in this test: the current
-              Source 2 Viewer can't rebuild cloth yet.
+              edits. Cloth is rebuilt from the original's settings. Needs CSDK and Steam running.
             </span>
           </div>
           <button className="btn primary" disabled={!p.extracted || !ov.csdkFound || !!busy || outdated} onClick={build}>
@@ -369,7 +377,7 @@ function ModelReportModal({ r, heroName, close, goLibrary }: { r: ModelBuildResu
       <p>
         <strong>"{r.modName}"</strong>: {r.report.files.length} file(s), {formatSize(r.report.vpkSize)}.
       </p>
-      <p className="hint">What to check in game (Hero Labs or a bot match): {heroName} looks normal, every animation plays, the gun hides during the ult, and the hero shows in the menus.</p>
+      <p className="hint">What to check in game (Hero Labs or a bot match): {heroName} looks normal, every animation plays, cloth moves, the gun hides during the ult, and the hero shows in the menus.</p>
       <ul className="file-list">
         {r.report.files.map((f) => (
           <li key={f}>

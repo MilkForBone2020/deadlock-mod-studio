@@ -132,6 +132,9 @@ pub struct ModelProject {
     pub extracted: Option<String>,
     #[serde(default)]
     pub extracted_build: Option<String>,
+    /// Source 2 Viewer version used, so older extracts can be redone.
+    #[serde(default)]
+    pub extracted_tool: Option<String>,
     #[serde(default)]
     pub mod_id: Option<String>,
     #[serde(default)]
@@ -705,6 +708,7 @@ impl Library {
             created: now(),
             extracted: None,
             extracted_build: None,
+            extracted_tool: None,
             mod_id: None,
             last_built: None,
         };
@@ -722,10 +726,11 @@ impl Library {
         self.save()
     }
 
-    pub fn mark_extracted(&mut self, id: &str, build: Option<String>) -> Result<()> {
+    pub fn mark_extracted(&mut self, id: &str, build: Option<String>, tool: &str) -> Result<()> {
         let p = self.model_project_mut(id)?;
         p.extracted = Some(now());
         p.extracted_build = build;
+        p.extracted_tool = Some(tool.to_string());
         self.save()
     }
 
@@ -992,7 +997,8 @@ mod tests {
         assert!(lib.create_model_project("x", "gigawatt", "sounds/a.vsnd").is_err());
         let p = lib.create_model_project("Seven test", "gigawatt", "models/heroes_staging/gigawatt_prisoner/gigawatt_prisoner.vmdl").unwrap();
         assert!(lib.model_dir(&p.id).is_dir());
-        lib.mark_extracted(&p.id, Some("123".into())).unwrap();
+        lib.mark_extracted(&p.id, Some("123".into()), "abc").unwrap();
+        assert_eq!(lib.model_project(&p.id).unwrap().extracted_tool.as_deref(), Some("abc"));
         assert_eq!(lib.model_project(&p.id).unwrap().extracted_build.as_deref(), Some("123"));
 
         let v1 = write_vpk(t.path(), "m1.vpk", &["models/heroes_staging/gigawatt_prisoner/gigawatt_prisoner.vmdl_c"]);

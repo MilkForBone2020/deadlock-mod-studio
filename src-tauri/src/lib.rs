@@ -61,6 +61,8 @@ struct Overview {
     model_projects: Vec<ModelProject>,
     /// Whether Source 2 Viewer's command-line tool is installed.
     s2v_installed: bool,
+    /// The Source 2 Viewer version extracts should use.
+    s2v_version: String,
 }
 
 /// Is Deadlock (project8.exe) running right now?
@@ -128,6 +130,7 @@ fn overview_of(lib: &Library) -> CmdResult<Overview> {
         csdk_found: lib.state.settings.csdk_dir.as_deref().map(|d| csdk::is_csdk_dir(Path::new(d))).unwrap_or(false),
         model_projects: lib.state.model_projects.clone(),
         s2v_installed: tools::s2v_exe(&lib.root.join("tools")).is_some(),
+        s2v_version: model::S2V_VERSION.to_string(),
     })
 }
 
@@ -703,7 +706,7 @@ fn ensure_s2v(tools_dir: &Path, progress: &dyn Fn(&str)) -> CmdResult<PathBuf> {
     if let Some(p) = tools::s2v_exe(tools_dir) {
         return Ok(p);
     }
-    progress("Downloading Source 2 Viewer (53 MB, first time only)");
+    progress("Downloading Source 2 Viewer (60 MB, first time only)");
     let resp = ureq::get(model::S2V_URL)
         .call()
         .map_err(|e| format!("Couldn't download Source 2 Viewer: {e}"))?;
@@ -758,7 +761,7 @@ async fn extract_model_project(app_handle: tauri::AppHandle, app: State<'_, App>
     .await
     .map_err(|e| e.to_string())??;
     let mut lib = app.lib.lock().unwrap();
-    lib.mark_extracted(&id, steam::build_id(&game_dir)).map_err(err)?;
+    lib.mark_extracted(&id, steam::build_id(&game_dir), model::S2V_VERSION).map_err(err)?;
     lib.log(&format!(
         "Extracted {} for \"{}\": {} bones, {} meshes, {} materials",
         project.model,

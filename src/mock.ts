@@ -112,7 +112,7 @@ function conflicts() {
 const ok = async () => undefined;
 
 let modelProjects: ModelProject[] = [
-  { id: "m1seven", name: "Seven test rebuild", hero: "gigawatt", model: "models/heroes_staging/gigawatt_prisoner/gigawatt_prisoner.vmdl", created: now(), extracted: null, extractedBuild: null, modId: null, lastBuilt: null },
+  { id: "m1seven", name: "Seven test rebuild", hero: "gigawatt", model: "models/heroes_staging/gigawatt_prisoner/gigawatt_prisoner.vmdl", created: now(), extracted: null, extractedBuild: null, extractedTool: null, modId: null, lastBuilt: null },
 ];
 let s2vInstalled = false;
 const sevenSummary: ModelSummary = {
@@ -144,6 +144,7 @@ export const mockApi: Api = {
     csdkFound: true,
     modelProjects: structuredClone(modelProjects),
     s2vInstalled,
+    s2vVersion: "fcf7323",
   }),
   checkForUpdate: async () => null,
   dismissSafeMode: ok,
@@ -272,7 +273,7 @@ export const mockApi: Api = {
     { code: "bebop", name: "Bebop", model: "models/heroes_staging/bebop/bebop.vmdl" },
   ],
   createModelProject: async (name, hero) => {
-    const p: ModelProject = { id: `m${Date.now()}`, name, hero, model: `models/heroes_staging/${hero}/${hero}.vmdl`, created: now(), extracted: null, extractedBuild: null, modId: null, lastBuilt: null };
+    const p: ModelProject = { id: `m${Date.now()}`, name, hero, model: `models/heroes_staging/${hero}/${hero}.vmdl`, created: now(), extracted: null, extractedBuild: null, extractedTool: null, modId: null, lastBuilt: null };
     modelProjects = [...modelProjects, p];
     return p;
   },
@@ -287,8 +288,8 @@ export const mockApi: Api = {
   extractModelProject: async (id) => {
     await wait(900);
     s2vInstalled = true;
-    modelProjects = modelProjects.map((p) => (p.id === id ? { ...p, extracted: now(), extractedBuild: BUILD } : p));
-    return { project: modelProjects.find((p) => p.id === id)!, report: { summary: sevenSummary, blenderFile: "C:\\x\\blender\\gigawatt_prisoner.glb", template: "x.vmdl", meshFiles: [], log: "" } };
+    modelProjects = modelProjects.map((p) => (p.id === id ? { ...p, extracted: now(), extractedBuild: BUILD, extractedTool: "fcf7323" } : p));
+    return { project: modelProjects.find((p) => p.id === id)!, report: { summary: sevenSummary, blenderFile: "C:\\x\\blender\\gigawatt_prisoner.glb", template: "x.vmdl", meshFiles: [], clothMissing: false, log: "" } };
   },
   buildModelProject: async (id) => {
     await wait(900);

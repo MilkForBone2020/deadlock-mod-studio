@@ -133,5 +133,5 @@ cargo test -p modcore
 ## Third-party code and tools
 
 - The binary KeyValues3 reader (`modcore/src/kv3.rs`) is ported from [ValveResourceFormat](https://github.com/ValveResourceFormat/ValveResourceFormat) (MIT licence).
-- Model Builder downloads Source 2 Viewer's command-line tool (MIT licence, by the ValveResourceFormat contributors) from its official GitHub release the first time a hero is extracted. The app pins version 20.1, checks the download's SHA-256 before unpacking it, and keeps it in `tools\` in the data folder.
+- Model Builder uses Source 2 Viewer's command-line tool (MIT licence, by the ValveResourceFormat contributors). The 20.1 release can't rebuild cloth yet, so `.github/workflows/build-s2v.yml` builds it from their official source at a pinned commit and publishes it as a pre-release of this repo. The app downloads it the first time a hero is extracted, checks its SHA-256 before unpacking, and keeps it in `tools\` in the data folder.
 - Building uses Valve's CSDK resource compiler, which you install yourself.

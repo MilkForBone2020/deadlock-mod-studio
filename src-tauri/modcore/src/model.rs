@@ -20,11 +20,14 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
-/// Source 2 Viewer command-line release the app downloads and uses.
-pub const S2V_VERSION: &str = "20.1";
+/// Source 2 Viewer's command-line tool, built from its official source at
+/// commit fcf7323 by `.github/workflows/build-s2v.yml` (the 20.1 release
+/// can't rebuild cloth yet). The app downloads it from this repo's release
+/// and checks the SHA-256 before unpacking.
+pub const S2V_VERSION: &str = "fcf7323";
 pub const S2V_URL: &str =
-    "https://github.com/ValveResourceFormat/ValveResourceFormat/releases/download/20.1/cli-windows-x64.zip";
-pub const S2V_SHA256: &str = "67aaf8a67a85ca60fd09ff343e62103a4cdf3a2d177fc656231d7d734c5b3aa3";
+    "https://github.com/MilkForBone2020/deadlock-mod-studio/releases/download/s2v-fcf7323/s2v-cli-win-x64.zip";
+pub const S2V_SHA256: &str = "41164c06014dbcc89c4817573fc41910e97c4a722c6c70f8731bb612ffcadc24";
 pub const S2V_EXE: &str = "Source2Viewer-CLI.exe";
 
 /// A few animations to include in the Blender file, so the skeleton comes
@@ -120,6 +123,13 @@ fn blocks<'a>(res: &'a [u8], kind: &[u8; 4]) -> Vec<&'a [u8]> {
         }
     }
     out
+}
+
+/// Whether a decompiled model source carries cloth (`Cloth...` nodes).
+pub fn has_cloth_nodes(doc: &kv3text::Doc) -> bool {
+    let mut all = vec![];
+    doc.root.walk(&mut all);
+    all.iter().any(|n| n.class().is_some_and(|c| c.starts_with("Cloth")))
 }
 
 pub fn summarise(res: &[u8]) -> Result<ModelSummary> {
@@ -224,6 +234,8 @@ pub struct ExtractReport {
     pub blender_file: String,
     pub template: String,
     pub mesh_files: Vec<String>,
+    /// The original has cloth but the decompiled source doesn't.
+    pub cloth_missing: bool,
     pub log: String,
 }
 
@@ -315,7 +327,7 @@ pub fn extract(
         let p = e.path();
         let fname = e.file_name().to_string_lossy().to_lowercase();
         let rel = format!("{dir}/{fname}");
-        if p.is_dir() && fname == "clips" {
+        if p.is_dir() && (fname == "clips" || fname == "dmx") {
             let _ = std::fs::remove_dir_all(&p);
         } else if fname.ends_with(".dmx") && !keep.contains(&rel) {
             let _ = std::fs::remove_file(&p);
@@ -323,7 +335,9 @@ pub fn extract(
     }
     std::fs::write(project_dir.join("summary.json"), serde_json::to_vec_pretty(&summary)?).at(project_dir)?;
 
+    let cloth_missing = summary.cloth_nodes > 0 && !has_cloth_nodes(&doc);
     Ok(ExtractReport {
+        cloth_missing,
         summary,
         blender_file: glb.display().to_string(),
         template: template.display().to_string(),
@@ -626,6 +640,7 @@ mod tests {
                 assert!(args[3].contains("materials/hero.vmat_c"), "materials decompiled too: {}", args[3]);
                 let d = out.join("models/heroes_staging/hero");
                 std::fs::create_dir_all(d.join("clips")).unwrap();
+                std::fs::create_dir_all(d.join("dmx/animation")).unwrap();
                 std::fs::write(d.join("hero.vmdl"), VMDL).unwrap();
                 for f in ["hero_body.dmx", "hero_hull.dmx", "hero_idle.dmx"] {
                     std::fs::write(d.join(f), b"dmx").unwrap();
@@ -638,7 +653,7 @@ mod tests {
         assert_eq!(r.mesh_files.len(), 2);
         let folder = project.join("original/models/heroes_staging/hero");
         assert!(!folder.join("hero_idle.dmx").exists(), "animation DMX dropped");
-        assert!(!folder.join("clips").exists());
+        assert!(!folder.join("clips").exists() && !folder.join("dmx").exists());
         assert!(folder.join("hero_body.dmx").exists() && folder.join("hero.vmdl_c").exists());
         assert!(project.join("blender/hero.glb").exists() && project.join("return").is_dir());
 

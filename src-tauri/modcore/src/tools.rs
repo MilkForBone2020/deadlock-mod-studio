@@ -25,7 +25,18 @@ pub fn sha256_hex(bytes: &[u8]) -> String {
 
 /// Check and unpack a downloaded release zip. Returns the exe's path.
 pub fn install_s2v(zip_bytes: &[u8], tools: &Path) -> Result<PathBuf> {
-    install_zip(zip_bytes, S2V_SHA256, &s2v_dir(tools), S2V_EXE)
+    let exe = install_zip(zip_bytes, S2V_SHA256, &s2v_dir(tools), S2V_EXE)?;
+    // Older versions are no longer used.
+    let current = s2v_dir(tools);
+    if let Ok(entries) = std::fs::read_dir(tools) {
+        for e in entries.flatten() {
+            let p = e.path();
+            if p.is_dir() && p != current && e.file_name().to_string_lossy().starts_with("source2viewer-") {
+                let _ = std::fs::remove_dir_all(&p);
+            }
+        }
+    }
+    Ok(exe)
 }
 
 fn install_zip(zip_bytes: &[u8], sha: &str, dest: &Path, exe: &str) -> Result<PathBuf> {
