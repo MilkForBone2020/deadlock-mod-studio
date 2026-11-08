@@ -314,6 +314,13 @@ pub fn extract(
     if !glb.is_file() {
         return Err(Error::msg(format!("Source 2 Viewer didn't write the Blender file.\n\n{}", tail(&out2))));
     }
+    // Keep Valve's double-sided faces through Blender's import.
+    progress("Preparing the Blender file");
+    let raw = std::fs::read(&glb).at(&glb)?;
+    if crate::glb::parse(&raw).is_ok() {
+        let (fixed, _) = crate::glb::split_duplicate_faces(&raw)?;
+        std::fs::write(&glb, fixed).at(&glb)?;
+    }
 
     // Animations come from the backup at build time, so the decompiled
     // animation files aren't needed: drop them to save ~200 MB.
@@ -496,9 +503,119 @@ pub fn write_blender_project(project_dir: &Path, id: &str, name: &str, hero: &st
     Ok(out)
 }
 
+/// What happened to one part in a build with an edited model.
+#[derive(Serialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct PartResult {
+    pub part: String,
+    /// "replaced", "kept" (unchanged, original files used) or "removed".
+    pub status: String,
+    pub vertices: usize,
+    pub triangles: usize,
+}
+
+/// Remove mesh names from the model source: their RenderMeshFiles, body
+/// group choices and LOD groups.
+pub fn remove_meshes(doc: &mut kv3text::Doc, names: &[String]) {
+    let gone = |n: &str| names.iter().any(|x| x == n);
+    doc.root.walk_mut(&mut |obj| {
+        if let Some(kids) = obj.children_mut() {
+            kids.retain(|k| !(k.class().as_deref() == Some("RenderMeshFile") && k.get("name").and_then(|n| n.as_str()).is_some_and(|n| gone(&n))));
+        }
+        if let Some(Kv::Array(m)) = obj.get_mut("meshes") {
+            m.retain(|x| !x.as_str().is_some_and(|n| gone(&n)));
+        }
+        if let Some(Kv::Array(m)) = obj.get_mut("mesh_references") {
+            m.retain(|x| !x.get("mesh_name").and_then(|n| n.as_str()).is_some_and(|n| gone(&n)));
+        }
+    });
+}
+
+/// Point a part (and its lower detail levels) at a new mesh file.
+pub fn set_part_file(doc: &mut kv3text::Doc, part: &Part, file: &str) {
+    let names: Vec<String> = std::iter::once(part.name.clone()).chain(part.lods.iter().cloned()).collect();
+    doc.root.walk_mut(&mut |obj| {
+        if obj.class().as_deref() == Some("RenderMeshFile") && obj.get("name").and_then(|n| n.as_str()).is_some_and(|n| names.contains(&n)) {
+            obj.set("filename", Kv::str(file));
+        }
+    });
+}
+
+fn part_file(doc: &kv3text::Doc, part: &str) -> Option<String> {
+    let mut all = vec![];
+    doc.root.walk(&mut all);
+    all.into_iter()
+        .find(|n| n.class().as_deref() == Some("RenderMeshFile") && n.get("name").and_then(|v| v.as_str()).as_deref() == Some(part))
+        .and_then(|n| n.get("filename").and_then(|v| v.as_str()))
+        .map(|f| f.replace('\\', "/"))
+}
+
+/// Swap in the model sent back from Blender (`returned` is the folder with
+/// manifest.json and the glb). New mesh files go into `content_root`.
+pub fn apply_returned(
+    doc: &mut kv3text::Doc,
+    project_dir: &Path,
+    model: &str,
+    returned: &Path,
+    content_root: &Path,
+) -> Result<Vec<PartResult>> {
+    let (dir, name) = split_model(model)?;
+    let manifest: crate::blender::Returned = serde_json::from_slice(&std::fs::read(returned.join("manifest.json")).at(returned)?)?;
+    let glb_path = returned.join(&manifest.glb);
+    let g = crate::glb::parse(&std::fs::read(&glb_path).at(&glb_path)?)?;
+    let meshes = crate::glb::skinned_meshes(&g)?;
+    let summary: ModelSummary = serde_json::from_slice(&std::fs::read(project_dir.join("summary.json")).at(project_dir)?)?;
+    let materials: std::collections::HashMap<String, String> = summary
+        .materials
+        .iter()
+        .map(|p| (p.rsplit('/').next().unwrap_or(p).trim_end_matches(".vmat").to_string(), p.clone()))
+        .collect();
+    let part_of: std::collections::HashMap<&str, &str> = manifest.objects.iter().map(|o| (o.object.as_str(), o.part.as_str())).collect();
+    let parts = parts(doc);
+    for m in &meshes {
+        match part_of.get(m.object.as_str()) {
+            Some(p) if parts.iter().any(|x| x.name == *p) => {}
+            _ => return Err(Error::msg(format!("{} isn't assigned to one of the hero's parts", m.object))),
+        }
+    }
+    let original = project_dir.join("original");
+    let mut results = vec![];
+    for part in &parts {
+        let mine: Vec<&crate::glb::SkinnedMesh> = meshes.iter().filter(|m| part_of.get(m.object.as_str()) == Some(&part.name.as_str())).collect();
+        if mine.is_empty() {
+            let names: Vec<String> = std::iter::once(part.name.clone()).chain(part.lods.iter().cloned()).collect();
+            remove_meshes(doc, &names);
+            results.push(PartResult { part: part.name.clone(), status: "removed".into(), vertices: 0, triangles: 0 });
+            continue;
+        }
+        let file = part_file(doc, &part.name).ok_or_else(|| Error::msg(format!("The model source has no mesh file for {}", part.name)))?;
+        let orig_path = native(&original, &file);
+        let orig = std::fs::read(&orig_path).at(&orig_path)?;
+        match crate::meshswap::swap(&orig, &mine, &materials, 1.0).map_err(|e| Error::msg(format!("{}: {e}", part.name)))? {
+            crate::meshswap::Swap::Unchanged => {
+                results.push(PartResult { part: part.name.clone(), status: "kept".into(), vertices: 0, triangles: 0 });
+            }
+            crate::meshswap::Swap::Replaced { dmx, vertices, triangles } => {
+                let rel = format!("{dir}/{name}_{}_dms.dmx", part.name);
+                let out = native(content_root, &rel);
+                std::fs::create_dir_all(out.parent().unwrap()).at(&out)?;
+                std::fs::write(&out, dmx).at(&out)?;
+                set_part_file(doc, part, &rel);
+                results.push(PartResult { part: part.name.clone(), status: "replaced".into(), vertices, triangles });
+            }
+        }
+    }
+    if results.iter().all(|r| r.status == "removed") {
+        return Err(Error::msg("The model from Blender has no parts"));
+    }
+    Ok(results)
+}
+
 #[derive(Serialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct ModelBuildReport {
+    /// Parts swapped from the Blender model (empty for an unchanged rebuild).
+    pub parts: Vec<PartResult>,
     pub vpk: String,
     pub vpk_size: u64,
     pub files: Vec<String>,
@@ -514,6 +631,7 @@ pub fn build(
     model: &str,
     project_dir: &Path,
     slug: &str,
+    returned: Option<&Path>,
     out_vpk: &Path,
     runner: &csdk::Runner,
     progress: &dyn Fn(&str),
@@ -544,10 +662,18 @@ pub fn build(
     progress("Preparing the model source");
     let mut doc = kv3text::parse(&std::fs::read_to_string(&template).at(&template)?)?;
     use_backup_animations(&mut doc, model)?;
+    let mut part_results = vec![];
+    if let Some(r) = returned {
+        progress("Converting your model from Blender");
+        part_results = apply_returned(&mut doc, project_dir, model, r, &content_root)?;
+    }
     let src = native(&content_root, &format!("{dir}/{name}.vmdl"));
     std::fs::create_dir_all(src.parent().unwrap()).at(&src)?;
     std::fs::write(&src, kv3text::to_string(&doc)).at(&src)?;
     for f in mesh_files(&doc) {
+        if native(&content_root, &f).is_file() {
+            continue; // written by apply_returned
+        }
         let from = native(&original, &f);
         if !from.is_file() {
             return Err(Error::msg(format!("A mesh file the model needs is missing: {f}")));
@@ -611,6 +737,7 @@ pub fn build(
         .take(50)
         .collect();
     Ok(ModelBuildReport {
+        parts: part_results,
         vpk: out_vpk.display().to_string(),
         vpk_size: std::fs::metadata(out_vpk).at(out_vpk)?.len(),
         files: packed.into_iter().map(|(p, _)| p).collect(),
@@ -731,6 +858,31 @@ mod tests {
     }
 
     #[test]
+    fn swaps_and_removes_part_files() {
+        let src = r#"{ rootNode = { _class = "RootNode" children = [
+            { _class = "RenderMeshList" children = [
+                { _class = "RenderMeshFile" name = "body" filename = "models/x/body.dmx" },
+                { _class = "RenderMeshFile" name = "body_lod1" filename = "models/x/body_lod1.dmx" },
+                { _class = "RenderMeshFile" name = "gun" filename = "models/x/gun.dmx" },
+            ] },
+            { _class = "BodyGroupList" children = [ { _class = "BodyGroup" name = "DEFAULT" children = [
+                { _class = "BodyGroupChoice" name = "BASE" meshes = [ "body", "gun" ] },
+            ] } ] },
+            { _class = "LODGroupList" children = [ { _class = "LODGroup" mesh_references = [ { mesh_name = "body" }, { mesh_name = "gun" } ] } ] },
+        ] } }"#;
+        let mut doc = kv3text::parse(src).unwrap();
+        let ps = parts(&doc);
+        set_part_file(&mut doc, &ps[0], "models/x/x_body_dms.dmx");
+        remove_meshes(&mut doc, &["gun".to_string()]);
+        assert_eq!(mesh_files(&doc), vec!["models/x/x_body_dms.dmx"]);
+        let text = kv3text::to_string(&doc);
+        assert!(!text.contains("\"gun\""), "{text}");
+        assert_eq!(part_file(&doc, "body").as_deref(), Some("models/x/x_body_dms.dmx"));
+        assert_eq!(crate::meshswap::base_material_name("gigawatt_prisoner.001"), "gigawatt_prisoner");
+        assert_eq!(crate::meshswap::base_material_name("a.b"), "a.b");
+    }
+
+    #[test]
     fn model_paths() {
         assert_eq!(backup_path("models/heroes_staging/gigawatt_prisoner/gigawatt_prisoner.vmdl").unwrap(), "models/heroes_staging/gigawatt_prisoner/gigawatt_prisoner_backup.vmdl");
         assert!(split_model("models/../x.vmdl").is_err());
@@ -798,7 +950,7 @@ mod tests {
             Ok((true, "WARNING: something minor\nOK: 1 compiled, 0 failed".into()))
         };
         let out = t.path().join("out/hero.vpk");
-        let b = build(&csdk_dir, &game, model, &project, "Seven test", &out, &compiler, &|_| {}).unwrap();
+        let b = build(&csdk_dir, &game, model, &project, "Seven test", None, &out, &compiler, &|_| {}).unwrap();
         assert_eq!(b.files, vec!["models/heroes_staging/hero/hero.vmdl_c", "models/heroes_staging/hero/hero_backup.vmdl_c"]);
         assert_eq!(b.warnings, vec!["WARNING: something minor"]);
         let packed = vpk::read_directory(&out).unwrap();

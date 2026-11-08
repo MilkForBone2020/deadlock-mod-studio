@@ -138,6 +138,10 @@ cargo test -p modcore
 - adds a **Deadlock** tab to the 3D view's sidebar: assign objects to the hero's parts, pose the rig with a few of the hero's animations, and check the model (bones kept and unmoved, every vertex weighted, at most 4 bones per vertex, power-of-two textures, size within ±10% of the original)
 - **Send to app** exports the model and a manifest into the project's `return` folder
 
+When you build with your model, the app reads the returned glTF (`modcore/src/glb.rs`), moves each part back into the game's coordinates and writes its geometry into a copy of that part's original DMX (`modcore/src/meshswap.rs`, `modcore/src/dmx.rs`). The skeleton, cloth, hitboxes and settings stay Valve's, every detail level of a changed part uses your mesh, and parts that come back identical keep their original files.
+
+At extract, faces Valve uses back to back (double-sided parts) are given their own vertices in the Blender file, because Blender drops a second face on the same three vertices.
+
 You can also install it by hand: zip the folder's two files and use Blender's *Install from Disk*.
 
 ## Third-party code and tools

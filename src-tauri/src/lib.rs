@@ -824,7 +824,7 @@ fn ensure_addon(exe: &Path, tools_dir: &Path, installed: Option<&str>) -> CmdRes
 
 /// Open the project in Blender, installing the add-on first if needed.
 #[tauri::command]
-async fn edit_in_blender(app: State<'_, App>, id: String) -> CmdResult<String> {
+async fn edit_in_blender(app: State<'_, App>, id: String, fresh: bool) -> CmdResult<String> {
     let (project, dir, tools_dir, exe, installed) = {
         let mut lib = app.lib.lock().unwrap();
         if lib.state.settings.blender_exe.is_none() {
@@ -860,7 +860,23 @@ async fn edit_in_blender(app: State<'_, App>, id: String) -> CmdResult<String> {
     }
 
     let work = PathBuf::from(&bp.work_blend);
+    if fresh && work.is_file() {
+        let bak = work.with_extension("blend.bak");
+        std::fs::rename(&work, &bak).map_err(|e| format!("Couldn't set the old work file aside: {e}"))?;
+        app.lib.lock().unwrap().log(&format!("Set aside the Blender work file for \"{}\" ({})", project.name, bak.display()));
+    }
     let first = !work.is_file();
+    if first {
+        // Projects extracted before 0.1.16 need Valve's double-sided faces split.
+        let glb = PathBuf::from(&bp.glb);
+        if let Ok(raw) = std::fs::read(&glb) {
+            if let Ok((fixed, n)) = modcore::glb::split_duplicate_faces(&raw) {
+                if n > 0 {
+                    std::fs::write(&glb, fixed).map_err(|e| e.to_string())?;
+                }
+            }
+        }
+    }
     let mut cmd = std::process::Command::new(&exe);
     cmd.args(blender::open_args(&pj, &work));
     #[cfg(windows)]
@@ -894,7 +910,7 @@ struct ModelBuildResult {
 
 /// Rebuild the project's model with CSDK and add it to the library.
 #[tauri::command]
-async fn build_model_project(app_handle: tauri::AppHandle, app: State<'_, App>, id: String) -> CmdResult<ModelBuildResult> {
+async fn build_model_project(app_handle: tauri::AppHandle, app: State<'_, App>, id: String, with_model: bool) -> CmdResult<ModelBuildResult> {
     let (project, csdk_dir, game_dir, dir, out) = {
         let lib = app.lib.lock().unwrap();
         let p = lib.model_project(&id).map_err(err)?.clone();
@@ -912,8 +928,14 @@ async fn build_model_project(app_handle: tauri::AppHandle, app: State<'_, App>, 
     let slug = format!("{}_{}", project.name, &project.id[..4]);
     let h = app_handle.clone();
     let model_path = project.model.clone();
+    let returned = if with_model {
+        let latest = blender::returned(&dir.join("return")).into_iter().next().ok_or("Nothing has been sent back from Blender yet")?;
+        Some(PathBuf::from(latest.folder))
+    } else {
+        None
+    };
     let report = tauri::async_runtime::spawn_blocking(move || {
-        model::build(&csdk_dir, &game_dir, &model_path, &dir, &slug, &out, &csdk::run_compiler, &|m| {
+        model::build(&csdk_dir, &game_dir, &model_path, &dir, &slug, returned.as_deref(), &out, &csdk::run_compiler, &|m| {
             let _ = h.emit("model-progress", m.to_string());
         })
     })
@@ -921,7 +943,8 @@ async fn build_model_project(app_handle: tauri::AppHandle, app: State<'_, App>, 
     .map_err(|e| e.to_string())?
     .map_err(err)?;
     let mut lib = app.lib.lock().unwrap();
-    let mod_id = lib.store_model_build(&id, Path::new(&report.vpk), "Built in Model Builder").map_err(err)?;
+    let notes = if with_model { "Built in Model Builder from the model edited in Blender" } else { "Built in Model Builder (original model, rebuilt)" };
+    let mod_id = lib.store_model_build(&id, Path::new(&report.vpk), notes).map_err(err)?;
     let mod_name = lib.get(&mod_id).map(|m| m.name.clone()).unwrap_or_default();
     lib.log(&format!("Built model mod \"{}\" ({} files, {} warning(s))", mod_name, report.files.len(), report.warnings.len()));
     Ok(ModelBuildResult { report, mod_id, mod_name })

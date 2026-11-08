@@ -211,7 +211,7 @@ export interface ExtractResult {
 }
 
 export interface ModelBuildResult {
-  report: { vpk: string; vpkSize: number; files: string[]; warnings: string[]; log: string };
+  report: { parts: { part: string; status: "replaced" | "kept" | "removed"; vertices: number; triangles: number }[]; vpk: string; vpkSize: number; files: string[]; warnings: string[]; log: string };
   modId: string;
   modName: string;
 }

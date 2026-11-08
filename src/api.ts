@@ -52,10 +52,10 @@ const tauriApi = {
   modelSummary: (id: string) => invoke<ModelSummary | null>("model_summary", { id }),
   openModelFolder: (id: string, which: "blender" | "return" | "original" | "project") => invoke<void>("open_model_folder", { id, which }),
   extractModelProject: (id: string) => invoke<ExtractResult>("extract_model_project", { id }),
-  buildModelProject: (id: string) => invoke<ModelBuildResult>("build_model_project", { id }),
+  buildModelProject: (id: string, withModel: boolean) => invoke<ModelBuildResult>("build_model_project", { id, withModel }),
   detectBlender: () => invoke<BlenderInstall[]>("detect_blender"),
   setBlenderExe: (path: string) => invoke<void>("set_blender_exe", { path }),
-  editInBlender: (id: string) => invoke<string>("edit_in_blender", { id }),
+  editInBlender: (id: string, fresh = false) => invoke<string>("edit_in_blender", { id, fresh }),
   modelReturns: (id: string) => invoke<Returned[]>("model_returns", { id }),
 };
 

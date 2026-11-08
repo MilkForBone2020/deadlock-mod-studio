@@ -293,14 +293,22 @@ export const mockApi: Api = {
     modelProjects = modelProjects.map((p) => (p.id === id ? { ...p, extracted: now(), extractedBuild: BUILD, extractedTool: "fcf7323" } : p));
     return { project: modelProjects.find((p) => p.id === id)!, report: { summary: sevenSummary, blenderFile: "C:\\x\\blender\\gigawatt_prisoner.glb", template: "x.vmdl", meshFiles: [], clothMissing: false, log: "" } };
   },
-  buildModelProject: async (id) => {
+  buildModelProject: async (id, withModel) => {
     await wait(900);
     const p = modelProjects.find((x) => x.id === id)!;
     modelProjects = modelProjects.map((x) => (x.id === id ? { ...x, lastBuilt: now(), modId: "a1" } : x));
     return {
       modId: "a1",
       modName: p.name,
-      report: { vpk: "x.vpk", vpkSize: 21_400_000, files: [`${p.model}_c`, p.model.replace(".vmdl", "_backup.vmdl_c")], warnings: ["WARNING: Unknown game data class CCitadelHeroModelGameData_t"], log: "OK: 1 compiled, 0 failed, 0 skipped" },
+      report: {
+        parts: withModel
+          ? [
+              { part: "outer_costume", status: "replaced", vertices: 67961, triangles: 107910 },
+              { part: "gun", status: "kept", vertices: 0, triangles: 0 },
+              { part: "headgear", status: "replaced", vertices: 13434, triangles: 22515 },
+            ]
+          : [],
+        vpk: "x.vpk", vpkSize: 21_400_000, files: [`${p.model}_c`, p.model.replace(".vmdl", "_backup.vmdl_c")], warnings: ["WARNING: Unknown game data class CCitadelHeroModelGameData_t"], log: "OK: 1 compiled, 0 failed, 0 skipped" },
     };
   },
   detectBlender: async () => [{ exe: "C:\\Program Files\\Blender Foundation\\Blender 5.0\\blender.exe", version: "5.0" }],

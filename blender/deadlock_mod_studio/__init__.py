@@ -19,7 +19,7 @@ import bpy
 from bpy.props import EnumProperty, StringProperty
 from mathutils import Vector
 
-ADDON_VERSION = "0.1.0"
+ADDON_VERSION = "0.1.1"
 MAX_WEIGHTS = 4
 # Fairness rule: a custom model stays close to the original's size.
 SIZE_TOLERANCE = 0.10
@@ -183,6 +183,9 @@ def import_hero(path, project):
     box = bounds(meshes)
     if box:
         scene["dms_ref_size"] = list(box[1] - box[0])
+    # Thin stick bones: the default octahedrons hide the model.
+    arm.data.display_type = "STICK"
+    arm.show_in_front = False
     arm.lock_location = (True, True, True)
     arm.lock_rotation = (True, True, True)
     arm.lock_scale = (True, True, True)

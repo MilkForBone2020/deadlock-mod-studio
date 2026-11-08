@@ -189,11 +189,12 @@ function ModelEditor({
       if (ok && cloth) void act(() => Promise.reject(`${heroName}'s cloth couldn't be rebuilt from the original, so it won't move in this build.`));
     });
 
-  const build = () =>
+  const [confirmFresh, setConfirmFresh] = useState(false);
+  const build = (withModel: boolean) =>
     run(`Building "${p.name}"`, async () => {
       let r: ModelBuildResult | null = null;
       const ok = await act(async () => {
-        r = await api.buildModelProject(p.id);
+        r = await api.buildModelProject(p.id, withModel);
       });
       if (ok && r) setResult(r);
     });
@@ -275,6 +276,25 @@ function ModelEditor({
             )}
           </div>
           <div className="row-actions">
+            {confirmFresh ? (
+              <span className="confirm">
+                Start over from the original?
+                <button
+                  className="btn danger small"
+                  onClick={() => {
+                    setConfirmFresh(false);
+                    void act(() => api.editInBlender(p.id, true), "Re-importing in Blender. Your old work file is kept as a .bak.");
+                  }}
+                >
+                  Re-import
+                </button>
+                <button className="btn ghost small" onClick={() => setConfirmFresh(false)}>Cancel</button>
+              </span>
+            ) : (
+              <button className="btn ghost" disabled={!p.extracted || !ov.settings.blenderExe} onClick={() => setConfirmFresh(true)} title="Start a fresh Blender work file from the original hero (the old one is kept as a .bak)">
+                Re-import
+              </button>
+            )}
             <button className="btn ghost" disabled={!p.extracted} onClick={() => act(() => api.openModelFolder(p.id, "blender"))} title="Open the project's blender folder">
               <Icon name="folder" size={14} />
             </button>
@@ -304,7 +324,7 @@ function ModelEditor({
                 {latest.objects.length} object(s), {latest.objects.reduce((n, o) => n + o.triangles, 0).toLocaleString()} triangles, parts{" "}
                 {[...new Set(latest.objects.map((o) => o.part))].join(", ")}.
               </span>
-              <span className="hint">Building with your edited model is the next update. For now, the build below rebuilds the original.</span>
+              <span className="hint">Parts you changed get new meshes. Parts you didn't touch keep Valve's original files.</span>
             </div>
           </li>
         )}
@@ -312,15 +332,23 @@ function ModelEditor({
         <li className={`model-step ${!p.extracted ? "later" : p.lastBuilt ? "done" : "current"}`}>
           <div className="ms-num">{p.lastBuilt ? <Icon name="check" size={14} /> : latest ? 4 : 3}</div>
           <div className="ms-body">
-            <strong>Build test mod</strong>
+            <strong>{latest ? "Build your model" : "Build test mod"}</strong>
             <span className="hint">
-              Rebuilds {heroName} unchanged from the extracted files, to prove the whole pipeline works in game before any
-              edits. Cloth is rebuilt from the original's settings. Needs CSDK and Steam running.
+              {latest
+                ? `Builds ${heroName} with your model from Blender: skeleton, animations, hitboxes, cloth and settings stay Valve's. Needs CSDK and Steam running.`
+                : `Rebuilds ${heroName} unchanged from the extracted files, to prove the pipeline works in game. Cloth is rebuilt from the original's settings. Needs CSDK and Steam running.`}
             </span>
           </div>
-          <button className="btn primary" disabled={!p.extracted || !ov.csdkFound || !!busy || outdated} onClick={build}>
-            {p.lastBuilt ? "Rebuild" : "Build test mod"}
-          </button>
+          <div className="row-actions">
+            {latest && (
+              <button className="btn ghost" disabled={!p.extracted || !ov.csdkFound || !!busy || outdated} onClick={() => build(false)} title="Rebuild the original model instead">
+                Original
+              </button>
+            )}
+            <button className="btn primary" disabled={!p.extracted || !ov.csdkFound || !!busy || outdated} onClick={() => build(!!latest)}>
+              {latest ? "Build with my model" : p.lastBuilt ? "Rebuild" : "Build test mod"}
+            </button>
+          </div>
         </li>
       </ol>
 
@@ -423,7 +451,29 @@ function ModelReportModal({ r, heroName, close, goLibrary }: { r: ModelBuildResu
       <p>
         <strong>"{r.modName}"</strong>: {r.report.files.length} file(s), {formatSize(r.report.vpkSize)}.
       </p>
-      <p className="hint">What to check in game (Hero Labs or a bot match): {heroName} looks normal, every animation plays, cloth moves, the gun hides during the ult, and the hero shows in the menus.</p>
+      {r.report.parts.length > 0 && (
+        <table className="report">
+          <thead>
+            <tr>
+              <th>Part</th>
+              <th>Result</th>
+              <th>Vertices</th>
+              <th>Triangles</th>
+            </tr>
+          </thead>
+          <tbody>
+            {r.report.parts.map((x) => (
+              <tr key={x.part}>
+                <td>{x.part}</td>
+                <td>{x.status === "replaced" ? "Your mesh" : x.status === "kept" ? "Unchanged (original kept)" : "Removed"}</td>
+                <td>{x.status === "replaced" ? x.vertices.toLocaleString() : ""}</td>
+                <td>{x.status === "replaced" ? x.triangles.toLocaleString() : ""}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+      <p className="hint">What to check in game (Hero Labs or a bot match): {heroName} looks right, every animation plays, cloth moves, the gun hides during the ult, and the hero shows in the menus.</p>
       <ul className="file-list">
         {r.report.files.map((f) => (
           <li key={f}>
