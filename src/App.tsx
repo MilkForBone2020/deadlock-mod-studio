@@ -26,6 +26,7 @@ export default function App() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [toasts, setToasts] = useState<Toast[]>([]);
   const [planOpen, setPlanOpen] = useState(false);
+  const [launchAfter, setLaunchAfter] = useState(false);
   const [busy, setBusy] = useState(false);
   const [dropping, setDropping] = useState(false);
   const [logKey, setLogKey] = useState(0);
@@ -211,8 +212,18 @@ export default function App() {
             label={ov.game.addonsLine ? "Loading my mods" : "My mods not loaded"}
           />
           <div className="build">Build {ov.game.buildId ?? "unknown"}</div>
-          <button className="btn small launch" disabled={!ov.game.found || ov.game.running || pending > 0} onClick={() => act(() => api.launchGame())} title={pending > 0 ? "Apply your changes first" : "Launch through Steam"}>
-            <Icon name="play" size={13} /> Launch
+          <button
+            className="btn small launch"
+            disabled={!ov.game.found || ov.game.running}
+            onClick={() => {
+              if (pending > 0) {
+                setLaunchAfter(true);
+                setPlanOpen(true);
+              } else void act(() => api.launchGame());
+            }}
+            title={pending > 0 ? "Review your changes, apply them, then start Deadlock through Steam" : "Start Deadlock through Steam"}
+          >
+            <Icon name="play" size={13} /> {pending > 0 ? "Apply & launch" : "Launch"}
           </button>
         </div>
       </aside>
@@ -293,7 +304,7 @@ export default function App() {
                     : "Nothing in the game folder changes until you apply."}
               </span>
             </div>
-            <button className="btn primary" onClick={() => setPlanOpen(true)}>
+            <button className="btn primary" onClick={() => { setLaunchAfter(false); setPlanOpen(true); }}>
               Review & apply
             </button>
           </div>
@@ -303,10 +314,21 @@ export default function App() {
       {planOpen && (
         <PlanModal
           ov={ov}
-          close={() => setPlanOpen(false)}
+          launchAfter={launchAfter}
+          close={() => {
+            setPlanOpen(false);
+            setLaunchAfter(false);
+          }}
           apply={async () => {
-            const ok = await act(() => api.applyChanges(), "Applied. The game folder matches your library.");
-            if (ok) setPlanOpen(false);
+            const ok = await act(
+              () => api.applyChanges(),
+              launchAfter ? "Applied. Starting Deadlock…" : "Applied. The game folder matches your library.",
+            );
+            if (ok) {
+              setPlanOpen(false);
+              if (launchAfter) await act(() => api.launchGame());
+              setLaunchAfter(false);
+            }
           }}
           busy={busy}
         />
@@ -381,7 +403,7 @@ function describe(a: Action): { icon: string; text: string; cls: string } {
   }
 }
 
-function PlanModal({ ov, close, apply, busy }: { ov: Overview; close: () => void; apply: () => void; busy: boolean }) {
+function PlanModal({ ov, close, apply, busy, launchAfter }: { ov: Overview; close: () => void; apply: () => void; busy: boolean; launchAfter: boolean }) {
   const p = ov.plan;
   const blocked = p.blockers.length > 0 || ov.game.running;
   return (
@@ -394,6 +416,7 @@ function PlanModal({ ov, close, apply, busy }: { ov: Overview; close: () => void
           <button className="btn ghost" onClick={close}>Cancel</button>
           <button className="btn primary" disabled={blocked || busy || p.actions.length === 0} onClick={apply}>
             Apply {p.actions.length} change{p.actions.length === 1 ? "" : "s"}
+            {launchAfter ? " & launch" : ""}
           </button>
         </>
       }
