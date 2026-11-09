@@ -34,6 +34,40 @@ pub const S2V_EXE: &str = "Source2Viewer-CLI.exe";
 /// with it and poses can be tested. Names a hero doesn't have are skipped.
 pub const BLENDER_ANIMS: &str = "primary_stand_idle,primary_run_n,primary_crouch_idle,ui_hero_pose";
 
+/// The animations to put in the Blender file, picked from the hero's own
+/// (names differ between heroes): an idle, a run, a crouch and the menu pose.
+pub fn blender_anims(doc: &kv3text::Doc) -> String {
+    let mut all = vec![];
+    doc.root.walk(&mut all);
+    let names: Vec<String> = all
+        .into_iter()
+        .filter(|n| n.class().as_deref() == Some("AnimFile"))
+        .filter_map(|n| n.get("name").and_then(|v| v.as_str()))
+        .collect();
+    let wanted: [&[&str]; 4] = [
+        &["primary_stand_idle", "stand_idle", "primary_idle", "idle"],
+        &["primary_run_n", "run_n", "run"],
+        &["primary_crouch_idle", "crouch_idle", "crouch"],
+        &["ui_hero_pose", "hero_pose"],
+    ];
+    let mut out: Vec<String> = vec![];
+    for patterns in wanted {
+        let pick = patterns
+            .iter()
+            .find_map(|p| names.iter().find(|n| n.as_str() == *p).or_else(|| names.iter().find(|n| n.contains(p) && !n.starts_with("self_"))));
+        if let Some(n) = pick {
+            if !out.contains(n) {
+                out.push(n.clone());
+            }
+        }
+    }
+    if out.is_empty() {
+        BLENDER_ANIMS.to_string()
+    } else {
+        out.join(",")
+    }
+}
+
 /// A hero and where its model lives, from `scripts/heroes.vdata`.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -293,6 +327,7 @@ pub fn extract(
         return Err(Error::msg(format!("Source 2 Viewer didn't write the model source.\n\n{}", tail(&out1))));
     }
 
+    let anims = kv3text::parse(&std::fs::read_to_string(&template).at(&template)?).map(|d| blender_anims(&d)).unwrap_or_else(|_| BLENDER_ANIMS.to_string());
     progress("Exporting for Blender");
     let glb = project_dir.join("blender").join(format!("{name}.glb"));
     let args = vec![
@@ -308,7 +343,7 @@ pub fn extract(
         "--gltf_export_materials".into(),
         "--gltf_export_animations".into(),
         "--gltf_animation_list".into(),
-        BLENDER_ANIMS.into(),
+        anims,
     ];
     let (_, out2) = runner(s2v, &args)?;
     if !glb.is_file() {
@@ -1043,5 +1078,16 @@ mod tests {
         v.extend((body.len() as i32).to_le_bytes()); // uncompressed size
         v.extend(body);
         v
+    }
+
+    #[test]
+    fn picks_each_heros_own_animations() {
+        let mk = |names: &[&str]| {
+            let nodes: Vec<String> = names.iter().map(|n| format!("{{ _class = \"AnimFile\" name = \"{n}\" }}")).collect();
+            kv3text::parse(&format!("<!-- kv3 encoding:text:version{{e21c7f3c-8a33-41c5-9977-a76d3a32aa0d}} format:modeldoc29:version{{3cec427c-1b0e-4d48-a90a-0436f33a6041}} -->\n{{ rootNode = {{ children = [ {} ] }} }}", nodes.join(", "))).unwrap()
+        };
+        assert_eq!(blender_anims(&mk(&["self_primary_aim_idle", "primary_stand_idle", "primary_run_n", "ui_hero_pose"])), "primary_stand_idle,primary_run_n,ui_hero_pose");
+        assert_eq!(blender_anims(&mk(&["melee_idle", "baton_run_n", "baton_crouch_idle"])), "melee_idle,baton_run_n,baton_crouch_idle");
+        assert_eq!(blender_anims(&mk(&[])), BLENDER_ANIMS);
     }
 }

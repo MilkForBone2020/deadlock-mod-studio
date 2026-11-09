@@ -14,6 +14,7 @@ use std::path::{Path, PathBuf};
 pub const ADDON_ID: &str = "deadlock_mod_studio";
 pub const ADDON_INIT: &str = include_str!("../../../blender/deadlock_mod_studio/__init__.py");
 pub const ADDON_MANIFEST: &str = include_str!("../../../blender/deadlock_mod_studio/blender_manifest.toml");
+pub const ADDON_FIT: &str = include_str!("../../../blender/deadlock_mod_studio/fit.py");
 
 /// The add-on's version, from its manifest.
 pub fn addon_version() -> String {
@@ -29,7 +30,7 @@ pub fn addon_zip() -> Result<Vec<u8>> {
     {
         let mut z = zip::ZipWriter::new(&mut buf);
         let opts = zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
-        for (name, text) in [("blender_manifest.toml", ADDON_MANIFEST), ("__init__.py", ADDON_INIT)] {
+        for (name, text) in [("blender_manifest.toml", ADDON_MANIFEST), ("__init__.py", ADDON_INIT), ("fit.py", ADDON_FIT)] {
             z.start_file(name, opts).map_err(|e| Error::msg(format!("zip: {e}")))?;
             z.write_all(text.as_bytes()).map_err(|e| Error::msg(format!("zip: {e}")))?;
         }
@@ -225,12 +226,12 @@ mod tests {
 
     #[test]
     fn addon_packs_with_its_version() {
-        assert_eq!(addon_version(), "0.1.7");
+        assert_eq!(addon_version(), "0.1.8");
         let z = addon_zip().unwrap();
         let mut a = zip::ZipArchive::new(std::io::Cursor::new(z)).unwrap();
         let names: Vec<String> = (0..a.len()).map(|i| a.by_index(i).unwrap().name().to_string()).collect();
         assert_eq!(names, vec!["blender_manifest.toml", "__init__.py"]);
-        assert!(ADDON_INIT.contains("ADDON_VERSION = \"0.1.7\""), "add-on and manifest versions match");
+        assert!(ADDON_INIT.contains("ADDON_VERSION = \"0.1.8\""), "add-on and manifest versions match");
     }
 
     #[test]

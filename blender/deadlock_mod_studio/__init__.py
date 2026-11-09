@@ -18,9 +18,11 @@ import time
 
 import bpy
 from bpy.props import EnumProperty, StringProperty
+
+from . import fit
 from mathutils import Vector
 
-ADDON_VERSION = "0.1.7"
+ADDON_VERSION = "0.1.8"
 MAX_WEIGHTS = 4
 # Fairness rule: a custom model stays close to the original's size. Smaller
 # is the unfair direction; accessories that stick out make you easier to see.
@@ -29,6 +31,8 @@ SIZE_GROWTH_LIMIT = 0.40
 BONE_MOVE_TOLERANCE = 0.001  # metres (about 0.04 game units)
 MODEL_COLLECTION = "Your model"
 REFERENCE_COLLECTION = "Reference (original)"
+INCOMING_COLLECTION = "Incoming model"
+OFF_COLLECTION = "Hero parts switched off"
 
 _project_cache = {}
 
@@ -160,6 +164,7 @@ def import_hero(path, project):
         o.name = part
         o.data.name = part
         o["dms_part"] = part if part in parts else ""
+        o["dms_hero_mesh"] = True
 
     # The original, kept as a see-through reference that follows the pose.
     for o in meshes:
@@ -169,8 +174,10 @@ def import_hero(path, project):
         ref.display_type = "WIRE"
         ref.hide_select = True
         ref.hide_render = True
-        if "dms_part" in ref:
-            del ref["dms_part"]
+        ref["dms_ref_part"] = o.get("dms_part", "")
+        for k in ("dms_part", "dms_hero_mesh"):
+            if k in ref:
+                del ref[k]
         reference.objects.link(ref)
     reference.hide_viewport = False
     for ref in reference.objects:
@@ -434,10 +441,17 @@ def run_checks(scene=None):
             if s.material:
                 materials.add(s.material.name)
 
+    switched_off = set(json.loads(scene.get("dms_fit_report", "{}")).get("replaced", []))
     for name in sorted(parts - used_parts):
-        issues.append(Issue("warn", f"Nothing is assigned to '{name}': that part will be empty in game"))
+        if name in switched_off:
+            issues.append(Issue("info", f"'{name}' is switched off (replaced by your model)"))
+        else:
+            issues.append(Issue("warn", f"Nothing is assigned to '{name}': that part will be empty in game"))
 
     for m in sorted(materials):
+        missing = base_color_image(bpy.data.materials.get(m)) if not hero_material(m, scene) else None
+        if missing is not None and (missing.size[0] == 0 or missing.size[1] == 0):
+            issues.append(Issue("error", f"Material {m}: its image {missing.name} is missing. Open it again in the Image Editor (Image › Replace)"))
         for img in material_images(bpy.data.materials.get(m)):
             w, h = img.size
             if w and h and not (is_pow2(w) and is_pow2(h)):
@@ -615,6 +629,200 @@ class DMS_OT_attach_to_bone(bpy.types.Operator):
         parts = sorted({attach_to_bone(o, arm, self.bone, context.scene) for o in objs})
         note = f"; left alone: {', '.join(skipped[:4])} (already rigged)" if skipped else ""
         self.report({"INFO"}, f"{len(objs)} object(s) attached to {self.bone} (part: {', '.join(parts)}){note}")
+        return {"FINISHED"}
+
+
+# ------------------------------------------------------------ fit a model ---
+
+def incoming_meshes():
+    coll = bpy.data.collections.get(INCOMING_COLLECTION)
+    return [o for o in coll.all_objects if o.type == "MESH"] if coll else []
+
+
+def hero_part_meshes(scene=None):
+    """{part: [the hero's own meshes for it]} still in my model."""
+    out = {}
+    for o in model_meshes(scene):
+        part = o.get("dms_part", "")
+        # Older work files have no flag: the hero's meshes are named after their part.
+        if o.get("dms_hero_mesh") or (part and o.name.split(".")[0] == part):
+            out.setdefault(part, []).append(o)
+    return out
+
+
+def reference_by_part():
+    out = {}
+    for o in reference_meshes():
+        part = o.get("dms_ref_part") or o.name.replace(" (original)", "").split(".")[0]
+        out[part] = o
+    return out
+
+
+def is_weapon_part(objs, arm):
+    """Mostly weighted to weapon bones (a gun, a baton): kept by default."""
+    for o in objs:
+        names = {g.index: g.name.lower() for g in o.vertex_groups}
+        weapon = total = 0
+        verts = o.data.vertices
+        for i in range(0, len(verts), 7):
+            v = verts[i]
+            if v.groups:
+                g = max(v.groups, key=lambda x: x.weight)
+                total += 1
+                if any(k in names.get(g.group, "") for k in ("weapon", "gun", "muzzle", "baton", "blade", "sword")):
+                    weapon += 1
+        if total and weapon * 2 > total:
+            return True
+    return False
+
+
+def bring_in(path):
+    """Append a model's meshes and their rigs from another .blend into an
+    'Incoming model' collection."""
+    with bpy.data.libraries.load(path, link=False) as (src, dst):
+        dst.objects = list(src.objects)
+    objs = [o for o in dst.objects if o is not None]
+    meshes = [o for o in objs if o.type == "MESH" and not o.name.startswith("WGT-") and len(o.data.polygons) > 0]
+    arms = fit.model_armatures(meshes)
+    keep = set(meshes) | set(arms)
+    coll = bpy.data.collections.get(INCOMING_COLLECTION) or bpy.data.collections.new(INCOMING_COLLECTION)
+    if coll.name not in bpy.context.scene.collection.children:
+        bpy.context.scene.collection.children.link(coll)
+    for o in objs:
+        if o in keep:
+            coll.objects.link(o)
+        else:
+            bpy.data.objects.remove(o)
+    for o in keep:
+        o.hide_set(False)
+    # Image paths relative to the other file: point them at it.
+    src_dir = os.path.dirname(os.path.abspath(path))
+    for o in meshes:
+        for slot in o.material_slots:
+            for img in material_images(slot.material):
+                if img.packed_file is None and img.filepath.startswith("//"):
+                    rel = img.filepath[2:].replace("\\", "/")
+                    cand = os.path.normpath(os.path.join(src_dir, rel))
+                    if os.path.isfile(cand):
+                        img.filepath = cand
+                        img.reload()
+    return meshes, arms
+
+
+class DMS_OT_fit_import(bpy.types.Operator):
+    """Bring in a character from another .blend (its meshes and rig) to fit onto the hero"""
+
+    bl_idname = "dms.fit_import"
+    bl_label = "Bring in model"
+    filepath: StringProperty(subtype="FILE_PATH")
+    filter_glob: StringProperty(default="*.blend", options={"HIDDEN"})
+
+    def invoke(self, context, event):
+        context.window_manager.fileselect_add(self)
+        return {"RUNNING_MODAL"}
+
+    def execute(self, context):
+        if not self.filepath.lower().endswith(".blend"):
+            self.report({"ERROR"}, "Pick a .blend file")
+            return {"CANCELLED"}
+        meshes, arms = bring_in(self.filepath)
+        if not meshes:
+            self.report({"ERROR"}, "No meshes found in that file")
+            return {"CANCELLED"}
+        self.report({"INFO"}, f"Brought in {len(meshes)} mesh(es) and {len(arms)} rig(s). Next: Fit to hero")
+        return {"FINISHED"}
+
+
+def run_fit(scene, into_part, replace):
+    """Fit the incoming model onto the hero; replaced hero parts are switched
+    off. Returns the report."""
+    arm = rig(scene)
+    meshes = incoming_meshes()
+    if not meshes:
+        raise RuntimeError("Bring in a model first")
+    rest_pose(arm)
+    parts = hero_part_meshes(scene)
+    refs = reference_by_part()
+    height_from = [refs[p] for p in replace if p in refs] or [o for p in replace for o in parts.get(p, [])]
+    old_arms = fit.model_armatures(meshes)
+    report = fit.fit_to_hero(meshes, arm, height_from, scene)
+    model = bpy.data.collections[MODEL_COLLECTION]
+    for o in meshes:
+        for c in list(o.users_collection):
+            c.objects.unlink(o)
+        model.objects.link(o)
+        o["dms_part"] = into_part
+    # The hero's own meshes for the parts I replace: switched off.
+    off = bpy.data.collections.get(OFF_COLLECTION) or bpy.data.collections.new(OFF_COLLECTION)
+    if off.name not in scene.collection.children:
+        scene.collection.children.link(off)
+    for p in replace:
+        for o in parts.get(p, []):
+            for c in list(o.users_collection):
+                c.objects.unlink(o)
+            off.objects.link(o)
+            o.hide_set(True)
+    layer = bpy.context.view_layer.layer_collection.children.get(off.name)
+    if layer:
+        layer.exclude = True
+    # What's left of the incoming model (its rigs) goes.
+    for a in old_arms:
+        if a.name in bpy.data.objects and not any(m.type == "ARMATURE" and m.object == a for o in bpy.data.objects if o.type == "MESH" for m in o.modifiers):
+            bpy.data.objects.remove(a)
+    inc = bpy.data.collections.get(INCOMING_COLLECTION)
+    if inc:
+        for o in list(inc.all_objects):
+            bpy.data.objects.remove(o)
+        bpy.data.collections.remove(inc)
+    report["part"] = into_part
+    report["replaced"] = sorted(replace)
+    scene["dms_fit_report"] = json.dumps(report, default=str)
+    return report
+
+
+class DMS_OT_fit_to_hero(bpy.types.Operator):
+    """Fit the brought-in model onto the hero's skeleton: scale to its height, move every joint onto the hero's, and move the weights onto the hero's bones"""
+
+    bl_idname = "dms.fit_to_hero"
+    bl_label = "Fit to hero"
+    bl_options = {"REGISTER", "UNDO"}
+
+    def part_items(self, context):
+        return [(p, p, "") for p in part_names(load_project(context.scene))] or [("", "No project", "")]
+
+    into_part: EnumProperty(name="Put it in", items=part_items)
+    replace: EnumProperty(name="Switch off", items=part_items, options={"ENUM_FLAG"})
+
+    def invoke(self, context, event):
+        parts = hero_part_meshes(context.scene)
+        names = part_names(load_project(context.scene))
+        if not names:
+            return {"CANCELLED"}
+        arm = rig(context.scene)
+        sizes = {p: sum(len(o.data.polygons) for o in parts.get(p, [])) for p in names}
+        self.into_part = max(names, key=lambda p: sizes.get(p, 0))
+        self.replace = {p for p in names if p in parts and not is_weapon_part(parts[p], arm)}
+        return context.window_manager.invoke_props_dialog(self, width=360)
+
+    def draw(self, context):
+        col = self.layout.column()
+        col.prop(self, "into_part")
+        col.label(text="Switch off the hero's own parts:")
+        col.prop(self, "replace")
+
+    def execute(self, context):
+        if not incoming_meshes():
+            self.report({"ERROR"}, "Bring in a model first")
+            return {"CANCELLED"}
+        if context.object and context.object.mode != "OBJECT":
+            bpy.ops.object.mode_set(mode="OBJECT")
+        try:
+            r = run_fit(context.scene, self.into_part, set(self.replace))
+        except RuntimeError as e:
+            self.report({"ERROR"}, str(e))
+            return {"CANCELLED"}
+        store_issues(context.scene, run_checks(context.scene))
+        self.report({"INFO"}, f"Fitted: {len(r['mapped'])} bones matched, {len(r['followers'])} following, scaled ×{r['scale']:.3f}")
         return {"FINISHED"}
 
 
@@ -1079,6 +1287,22 @@ class DMS_PT_main(bpy.types.Panel):
             row.label(text=p["name"], icon="CHECKBOX_HLT" if n else "CHECKBOX_DEHLT")
             row.label(text=f"{n} obj · {shown}" if shown else f"{n} obj")
 
+        # Fit a model from another file
+        box = layout.box()
+        box.label(text=f"Fit a model to {project.get('heroName') or 'the hero'}", icon="OUTLINER_OB_ARMATURE")
+        inc = incoming_meshes()
+        row = box.row(align=True)
+        row.operator("dms.fit_import", text="Bring in model…", icon="APPEND_BLEND")
+        sub = row.row(align=True)
+        sub.enabled = bool(inc)
+        sub.operator("dms.fit_to_hero", text="Fit to hero", icon="CON_ARMATURE")
+        if inc:
+            box.label(text=f"Ready: {len(inc)} mesh(es) from {len(fit.model_armatures(inc))} rig(s)")
+        rep_json = scene.get("dms_fit_report")
+        if rep_json:
+            r = json.loads(rep_json)
+            box.label(text=f"Last fit: {len(r.get('mapped', []))} bones matched, {len(r.get('followers', {}))} following, ×{r.get('scale', 1):.3f}", icon="CHECKMARK")
+
         # Reference and poses
         box = layout.box()
         box.label(text="Compare and pose", icon="POSE_HLT")
@@ -1137,6 +1361,8 @@ classes = (
     DMS_OT_open_project,
     DMS_OT_set_part,
     DMS_OT_attach_to_bone,
+    DMS_OT_fit_import,
+    DMS_OT_fit_to_hero,
     DMS_OT_check,
     DMS_OT_limit_weights,
     DMS_OT_select_unweighted,
