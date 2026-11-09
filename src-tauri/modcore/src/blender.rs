@@ -174,6 +174,18 @@ pub struct Returned {
     pub objects: Vec<ReturnedObject>,
     #[serde(default)]
     pub materials: Vec<String>,
+    /// Materials whose textures changed in Blender.
+    #[serde(default)]
+    pub material_files: Vec<MaterialFile>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct MaterialFile {
+    pub name: String,
+    /// Path (inside the returned folder) of a repainted colour texture.
+    #[serde(default)]
+    pub color: Option<String>,
 }
 
 pub fn returned(return_dir: &Path) -> Vec<Returned> {
@@ -201,12 +213,12 @@ mod tests {
 
     #[test]
     fn addon_packs_with_its_version() {
-        assert_eq!(addon_version(), "0.1.1");
+        assert_eq!(addon_version(), "0.1.2");
         let z = addon_zip().unwrap();
         let mut a = zip::ZipArchive::new(std::io::Cursor::new(z)).unwrap();
         let names: Vec<String> = (0..a.len()).map(|i| a.by_index(i).unwrap().name().to_string()).collect();
         assert_eq!(names, vec!["blender_manifest.toml", "__init__.py"]);
-        assert!(ADDON_INIT.contains("ADDON_VERSION = \"0.1.1\""), "add-on and manifest versions match");
+        assert!(ADDON_INIT.contains("ADDON_VERSION = \"0.1.2\""), "add-on and manifest versions match");
     }
 
     #[test]

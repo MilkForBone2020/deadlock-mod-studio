@@ -308,6 +308,7 @@ export const mockApi: Api = {
               { part: "headgear", status: "replaced", vertices: 13434, triangles: 22515 },
             ]
           : [],
+        materials: withModel ? [{ material: "gigawatt_prisoner", path: "models/heroes_staging/gigawatt_prisoner/materials/gigawatt_prisoner.vmat", color: "x_dms_color.png", size: [2048, 2048], resized: false }] : [],
         vpk: "x.vpk", vpkSize: 21_400_000, files: [`${p.model}_c`, p.model.replace(".vmdl", "_backup.vmdl_c")], warnings: ["WARNING: Unknown game data class CCitadelHeroModelGameData_t"], log: "OK: 1 compiled, 0 failed, 0 skipped" },
     };
   },
@@ -322,6 +323,6 @@ export const mockApi: Api = {
   },
   modelReturns: async () =>
     sentBack
-      ? [{ folder: "x", sent: now(), blender: "5.0.0", addon: "0.1.0", glb: "model.glb", objects: [{ object: "outer_costume", part: "outer_costume", triangles: 107910 }, { object: "gun", part: "gun", triangles: 32803 }], materials: ["gigawatt_prisoner"] }]
+      ? [{ folder: "x", sent: now(), blender: "5.0.0", addon: "0.1.0", glb: "model.glb", objects: [{ object: "outer_costume", part: "outer_costume", triangles: 107910 }, { object: "gun", part: "gun", triangles: 32803 }], materials: ["gigawatt_prisoner"], materialFiles: [{ name: "gigawatt_prisoner", color: "textures/gigawatt_prisoner_color.png" }] }]
       : [],
 };

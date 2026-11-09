@@ -616,6 +616,8 @@ pub fn apply_returned(
 pub struct ModelBuildReport {
     /// Parts swapped from the Blender model (empty for an unchanged rebuild).
     pub parts: Vec<PartResult>,
+    /// Materials rebuilt with textures changed in Blender.
+    pub materials: Vec<crate::material::MaterialResult>,
     pub vpk: String,
     pub vpk_size: u64,
     pub files: Vec<String>,
@@ -663,10 +665,18 @@ pub fn build(
     let mut doc = kv3text::parse(&std::fs::read_to_string(&template).at(&template)?)?;
     use_backup_animations(&mut doc, model)?;
     let mut part_results = vec![];
+    let mut material_results = vec![];
     if let Some(r) = returned {
         progress("Converting your model from Blender");
         part_results = apply_returned(&mut doc, project_dir, model, r, &content_root)?;
+        let manifest: crate::blender::Returned = serde_json::from_slice(&std::fs::read(r.join("manifest.json")).at(r)?)?;
+        if manifest.material_files.iter().any(|m| m.color.is_some()) {
+            progress("Preparing your textures");
+            let summary: ModelSummary = serde_json::from_slice(&std::fs::read(project_dir.join("summary.json")).at(project_dir)?)?;
+            material_results = crate::material::apply(r, &manifest.material_files, &summary.materials, &original, &content_root)?;
+        }
     }
+    let overridden: BTreeSet<String> = material_results.iter().map(|m| format!("{}_c", m.path.to_lowercase())).collect();
     let src = native(&content_root, &format!("{dir}/{name}.vmdl"));
     std::fs::create_dir_all(src.parent().unwrap()).at(&src)?;
     std::fs::write(&src, kv3text::to_string(&doc)).at(&src)?;
@@ -700,9 +710,23 @@ pub fn build(
     let index = vpk::read_directory(&pak)?;
     for r in external_refs(&compiled)? {
         let rel = format!("{}_c", r.to_lowercase());
+        if overridden.contains(&rel) {
+            continue; // rebuilt from my textures below
+        }
         if let Some(e) = index.find(&rel) {
             put(&rel, &index.extract(e)?)?;
             placed.insert(rel);
+        }
+    }
+
+    let mut mat_log = String::new();
+    for m in &material_results {
+        progress(&format!("Compiling material {}", m.material));
+        let src = native(&content_root, &m.path);
+        let (ok, log) = runner(csdk_dir, &src)?;
+        mat_log.push_str(&format!("== {}\n{}\n", m.path, tail(&log)));
+        if !ok || !native(&game_root, &format!("{}_c", m.path)).is_file() {
+            return Err(Error::msg(format!("CSDK couldn't compile the material {}.\n\n{}", m.material, tail(&log))));
         }
     }
 
@@ -727,6 +751,7 @@ pub fn build(
         std::fs::create_dir_all(p).at(p)?;
     }
     vpk::write_vpk(out_vpk, &packed)?;
+    let log = format!("{mat_log}{log}");
     let warnings = log
         .lines()
         .filter(|l| {
@@ -738,6 +763,7 @@ pub fn build(
         .collect();
     Ok(ModelBuildReport {
         parts: part_results,
+        materials: material_results,
         vpk: out_vpk.display().to_string(),
         vpk_size: std::fs::metadata(out_vpk).at(out_vpk)?.len(),
         files: packed.into_iter().map(|(p, _)| p).collect(),

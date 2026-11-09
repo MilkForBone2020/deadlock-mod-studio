@@ -322,7 +322,11 @@ function ModelEditor({
               <span className="hint">
                 Sent {formatDate(latest.sent)} {new Date(latest.sent).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" })}:{" "}
                 {latest.objects.length} object(s), {latest.objects.reduce((n, o) => n + o.triangles, 0).toLocaleString()} triangles, parts{" "}
-                {[...new Set(latest.objects.map((o) => o.part))].join(", ")}.
+                {[...new Set(latest.objects.map((o) => o.part))].join(", ")}
+                {latest.materialFiles?.some((m) => m.color)
+                  ? `; new textures for ${latest.materialFiles.filter((m) => m.color).map((m) => m.name).join(", ")}`
+                  : ""}
+                .
               </span>
               <span className="hint">Parts you changed get new meshes. Parts you didn't touch keep Valve's original files.</span>
             </div>
@@ -468,6 +472,29 @@ function ModelReportModal({ r, heroName, close, goLibrary }: { r: ModelBuildResu
                 <td>{x.status === "replaced" ? "Your mesh" : x.status === "kept" ? "Unchanged (original kept)" : "Removed"}</td>
                 <td>{x.status === "replaced" ? x.vertices.toLocaleString() : ""}</td>
                 <td>{x.status === "replaced" ? x.triangles.toLocaleString() : ""}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+      {r.report.materials.length > 0 && (
+        <table className="report">
+          <thead>
+            <tr>
+              <th>Material</th>
+              <th>Result</th>
+              <th>Texture</th>
+            </tr>
+          </thead>
+          <tbody>
+            {r.report.materials.map((m) => (
+              <tr key={m.path}>
+                <td>{m.material}</td>
+                <td>Your colour texture</td>
+                <td>
+                  {m.size[0]}×{m.size[1]}
+                  {m.resized ? " (resized to a power of two)" : ""}
+                </td>
               </tr>
             ))}
           </tbody>

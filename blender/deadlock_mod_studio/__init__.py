@@ -11,6 +11,7 @@ Nothing here touches the game's files: it reads the project folder and writes
 only into the project's `blender` and `return` folders.
 """
 
+import hashlib
 import json
 import os
 import time
@@ -19,7 +20,7 @@ import bpy
 from bpy.props import EnumProperty, StringProperty
 from mathutils import Vector
 
-ADDON_VERSION = "0.1.1"
+ADDON_VERSION = "0.1.2"
 MAX_WEIGHTS = 4
 # Fairness rule: a custom model stays close to the original's size.
 SIZE_TOLERANCE = 0.10
@@ -192,6 +193,13 @@ def import_hero(path, project):
     _lock_bones(arm, True)
     for a in bpy.data.actions:
         a.use_fake_user = True
+    # Remember each material's colour image, to spot repaints later.
+    mats = {}
+    for m in bpy.data.materials:
+        img = base_color_image(m)
+        if img:
+            mats[m.name] = {"color": {"image": img.name, "hash": file_hash(bpy.path.abspath(img.filepath))}}
+    scene["dms_materials"] = json.dumps(mats)
     scene["dms_imported"] = time.strftime("%Y-%m-%dT%H:%M:%S")
 
 
@@ -230,6 +238,58 @@ class Issue:
         self.text = text
         self.fix = fix  # operator idname suffix, or ""
         self.target = target  # object name the fix applies to
+
+
+def base_color_image(mat):
+    """The image plugged straight into a material's Base Color, or None."""
+    if not mat or not mat.use_nodes or not mat.node_tree:
+        return None
+    for node in mat.node_tree.nodes:
+        if node.type == "BSDF_PRINCIPLED":
+            inp = node.inputs.get("Base Color")
+            if inp and inp.is_linked:
+                src = inp.links[0].from_node
+                if src.type == "TEX_IMAGE" and src.image:
+                    return src.image
+    return None
+
+
+def file_hash(path):
+    try:
+        with open(path, "rb") as f:
+            return hashlib.md5(f.read()).hexdigest()
+    except OSError:
+        return ""
+
+
+def image_changed(img, original_hash):
+    """Has this image been painted, replaced or edited since import?"""
+    if img.size[0] == 0 or img.size[1] == 0:
+        return False  # no pixels loaded (file missing): nothing to send
+    if img.is_dirty or img.packed_file is not None:
+        return True
+    if not original_hash:
+        return False
+    return file_hash(bpy.path.abspath(img.filepath)) != original_hash
+
+
+def save_image_copy(img, path):
+    """Write an image's current pixels (unsaved paint included) to a new PNG
+    without changing the image itself."""
+    import numpy as np
+
+    w, h = img.size
+    buf = np.empty(w * h * 4, dtype=np.float32)
+    img.pixels.foreach_get(buf)
+    out = bpy.data.images.new("dms_export_tmp", w, h, alpha=True)
+    try:
+        out.colorspace_settings.name = img.colorspace_settings.name
+        out.pixels.foreach_set(buf)
+        out.filepath_raw = path
+        out.file_format = "PNG"
+        out.save()
+    finally:
+        bpy.data.images.remove(out)
 
 
 def is_pow2(n):
@@ -574,6 +634,24 @@ def send_to_app(scene=None):
         if saved_action is not None:
             arm.animation_data.action = saved_action
 
+    # Repainted or replaced colour textures.
+    originals = json.loads(scene.get("dms_materials", "{}"))
+    material_files = []
+    used = sorted({s.material.name for o in meshes for s in o.material_slots if s.material})
+    for name in used:
+        mat = bpy.data.materials[name]
+        img = base_color_image(mat)
+        entry = {"name": name, "color": None}
+        if img is not None:
+            orig = originals.get(name, {}).get("color", {})
+            replaced = img.name != orig.get("image") and img.size[0] > 0
+            if replaced or image_changed(img, orig.get("hash", "")):
+                os.makedirs(os.path.join(out_dir, "textures"), exist_ok=True)
+                rel = f"textures/{bpy.path.clean_name(name)}_color.png"
+                save_image_copy(img, os.path.join(out_dir, rel))
+                entry["color"] = rel
+        material_files.append(entry)
+
     manifest = {
         "format": 1,
         "projectId": project["id"],
@@ -583,7 +661,8 @@ def send_to_app(scene=None):
         "glb": "model.glb",
         "rig": arm.name,
         "objects": [{"object": o.name, "part": o.get("dms_part", ""), "triangles": sum(len(p.vertices) - 2 for p in o.data.polygons)} for o in meshes],
-        "materials": sorted({s.material.name for o in meshes for s in o.material_slots if s.material}),
+        "materials": used,
+        "materialFiles": material_files,
     }
     with open(os.path.join(out_dir, "manifest.json"), "w", encoding="utf-8") as f:
         json.dump(manifest, f, indent=2)

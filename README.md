@@ -140,6 +140,8 @@ cargo test -p modcore
 
 When you build with your model, the app reads the returned glTF (`modcore/src/glb.rs`), moves each part back into the game's coordinates and writes its geometry into a copy of that part's original DMX (`modcore/src/meshswap.rs`, `modcore/src/dmx.rs`). The skeleton, cloth, hitboxes and settings stay Valve's, every detail level of a changed part uses your mesh, and parts that come back identical keep their original files.
 
+Repainted colour textures: the add-on records each material's colour image at import and sends any that changed. The app rebuilds that material at its original path from the extracted source (`modcore/src/material.rs`): Valve's hero shader and settings stay, the colour slot gets your image (resized to a power of two if needed, alpha dropped), and CSDK compiles it with the model.
+
 At extract, faces Valve uses back to back (double-sided parts) are given their own vertices in the Blender file, because Blender drops a second face on the same three vertices.
 
 You can also install it by hand: zip the folder's two files and use Blender's *Install from Disk*.

@@ -211,7 +211,10 @@ export interface ExtractResult {
 }
 
 export interface ModelBuildResult {
-  report: { parts: { part: string; status: "replaced" | "kept" | "removed"; vertices: number; triangles: number }[]; vpk: string; vpkSize: number; files: string[]; warnings: string[]; log: string };
+  report: {
+    parts: { part: string; status: "replaced" | "kept" | "removed"; vertices: number; triangles: number }[];
+    materials: { material: string; path: string; color: string | null; size: [number, number]; resized: boolean }[];
+    vpk: string; vpkSize: number; files: string[]; warnings: string[]; log: string };
   modId: string;
   modName: string;
 }
@@ -229,4 +232,5 @@ export interface Returned {
   glb: string;
   objects: { object: string; part: string; triangles: number }[];
   materials: string[];
+  materialFiles?: { name: string; color: string | null }[];
 }

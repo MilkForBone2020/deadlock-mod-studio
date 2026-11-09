@@ -19,6 +19,7 @@ lz4_flex = { version = "0.11", default-features = false, features = ["safe-decod
 ruzstd = "0.7"
 sha2 = "0.10"
 zip = { version = "2", default-features = false, features = ["deflate"] }
+image = { version = "0.25", default-features = false, features = ["png"] }
 
 [dev-dependencies]
 tempfile = "3"

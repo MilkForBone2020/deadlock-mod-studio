@@ -13,6 +13,7 @@ pub mod glb;
 pub mod kv3;
 pub mod kv3text;
 pub mod library;
+pub mod material;
 pub mod meshswap;
 pub mod model;
 pub mod steam;
