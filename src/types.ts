@@ -61,8 +61,19 @@ export interface GameStatus {
   sharedAddonsLine: boolean | null;
 }
 
+export interface Pack {
+  id: string;
+  name: string;
+  notes: string;
+  enabled: boolean;
+  /** Member mod ids, in load order. */
+  mods: string[];
+  created: string;
+}
+
 export interface Overview {
   mods: ModEntry[];
+  packs: Pack[];
   profiles: Profile[];
   settings: { gameDir: string | null; csdkDir: string | null; blenderExe: string | null; blenderAddon: string | null };
   safeMode: SafeModeEvent | null;

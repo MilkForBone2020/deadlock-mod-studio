@@ -88,7 +88,7 @@ pub fn plan(lib: &Library, game_dir: &Path) -> Result<Plan> {
         ));
         return Ok(p);
     }
-    let enabled: Vec<_> = lib.state.mods.iter().filter(|m| m.enabled).collect();
+    let enabled: Vec<_> = lib.active_mods();
     if enabled.len() > MAX_MODS {
         p.blockers.push(format!("Deadlock loads at most {MAX_MODS} addon VPKs; {} are on", enabled.len()));
         return Ok(p);

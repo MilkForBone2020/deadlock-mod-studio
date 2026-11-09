@@ -75,10 +75,20 @@ export default function App() {
   const importPaths = useCallback(
     async (paths: string[]) => {
       const vpks = paths.filter((p) => p.toLowerCase().endsWith(".vpk"));
+      const packFiles = paths.filter((p) => p.toLowerCase().endsWith(".dmpack"));
       const audio = paths.filter((p) => AUDIO_EXTS.includes(p.split(".").pop()?.toLowerCase() ?? ""));
       if (audio.length && viewRef.current === "sounds") {
         if (soundDrop.current) soundDrop.current(audio);
         else toast("info", "Create a sound mod on the left first, then add the game sound your file replaces.");
+        if (!vpks.length && !packFiles.length) return;
+      }
+      if (packFiles.length) {
+        await act(async () => {
+          for (const f of packFiles) {
+            const p = await api.importPack(f);
+            toast("ok", `Imported the pack "${p.name}" (${p.mods.length} mods). It starts switched off.`);
+          }
+        });
         if (!vpks.length) return;
       }
       if (vpks.length === 0) {
@@ -86,7 +96,7 @@ export default function App() {
           "info",
           audio.length
             ? "Audio files go in Sound Builder: open it, pick the game sound to replace, then drop your file."
-            : "Only .vpk and audio files can be dropped here",
+            : "Only .vpk, .dmpack (mod packs) and audio files can be dropped here",
         );
         return;
       }
@@ -101,7 +111,7 @@ export default function App() {
   );
 
   const pickImport = useCallback(async () => {
-    const picked = await open({ multiple: true, filters: [{ name: "VPK", extensions: ["vpk"] }] });
+    const picked = await open({ multiple: true, filters: [{ name: "Mods (VPK or mod pack)", extensions: ["vpk", "dmpack"] }] });
     if (!picked) return;
     await importPaths(Array.isArray(picked) ? picked : [picked]);
   }, [importPaths]);
@@ -350,7 +360,7 @@ export default function App() {
         <div className="drop-overlay">
           <div>
             <Icon name="plus" size={36} />
-            <p>Drop VPKs to import</p>
+            <p>Drop VPKs or mod packs to import</p>
           </div>
         </div>
       )}

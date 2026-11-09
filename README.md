@@ -71,6 +71,10 @@ src-tauri\target\release\bundle\nsis\Deadlock Mod Studio_0.1.0_x64-setup.exe
 Which number wins when two mods change the same file hasn't been tested yet:
 enable two mods that share a file (the app flags these) and see which one plays.
 
+## Mod packs
+
+Group mods into a pack (Library → **New pack**, or a mod's **Pack** picker), e.g. a full Seven pack with his model, sounds and HUD. The pack shows as one card with its own switch: off means none of its mods load; on means each mod follows its own switch. A pack's mods always sit together in the load order and move as one. **Export pack…** writes one `.dmpack` file (a zip with `pack.json` and the VPKs); import it with **Import** or by dropping it on the window. Imported packs start switched off.
+
 ## Sound Builder
 
 Make sound mods without opening CSDK's tools. Create a sound mod, add the

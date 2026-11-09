@@ -2,7 +2,7 @@
 // plain browser (`npm run dev`) so the design can be worked on without the
 // desktop app. Nothing here touches real files.
 
-import type { Action, ModEntry, ModelProject, ModelSummary, Overview, Profile, SoundProject } from "./types";
+import type { Action, ModEntry, ModelProject, ModelSummary, Overview, Pack, Profile, SoundProject } from "./types";
 import type { Api } from "./api";
 
 const BUILD = "20614033";
@@ -83,7 +83,7 @@ function mockUses(p: string) {
 let log: string[] = [`${now().slice(0, 19)}+00:00  Imported "Seven Storm Cloud remix" (5 files inside)`];
 
 function plan() {
-  const want = mods.filter((m) => m.enabled).map((m) => m.id);
+  const want = mods.filter(active).map((m) => m.id);
   const actions: Action[] = [];
   want.forEach((id, i) => {
     if (applied[i] !== id) {
@@ -105,7 +105,7 @@ function plan() {
 
 function conflicts() {
   const map = new Map<string, string[]>();
-  for (const m of mods.filter((x) => x.enabled)) for (const f of m.files) map.set(f, [...(map.get(f) ?? []), m.id]);
+  for (const m of mods.filter(active)) for (const f of m.files) map.set(f, [...(map.get(f) ?? []), m.id]);
   return [...map].filter(([, v]) => v.length > 1).map(([path, ids]) => ({ path, mods: ids }));
 }
 
@@ -132,9 +132,25 @@ const sevenSummary: ModelSummary = {
 };
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+let packs: Pack[] = [];
+// Same rule as the app: a pack's mods sit together at its first mod's place.
+const groupPacks = () => {
+  packs = packs.map((p) => ({ ...p, mods: mods.filter((m) => p.mods.includes(m.id)).map((m) => m.id) })).filter((p) => p.mods.length);
+  const out: typeof mods = [];
+  for (const m of mods) {
+    if (out.includes(m)) continue;
+    const p = packs.find((x) => x.mods.includes(m.id));
+    if (p) out.push(...p.mods.map((id) => mods.find((x) => x.id === id)!));
+    else out.push(m);
+  }
+  mods = out;
+};
+const active = (m: { id: string; enabled: boolean }) => m.enabled && (packs.find((p) => p.mods.includes(m.id))?.enabled ?? true);
+
 export const mockApi: Api = {
   overview: async (): Promise<Overview> => ({
     mods: structuredClone(mods),
+    packs: structuredClone(packs),
     profiles: structuredClone(profiles),
     settings: { gameDir: "D:\\Games\\SteamLibrary\\steamapps\\common\\Deadlock", csdkDir: "D:\\Desktop\\Reduced_CSDK_13", blenderExe: blenderExe, blenderAddon: null },
     safeMode: null,
@@ -168,6 +184,42 @@ export const mockApi: Api = {
   },
   reorder: async (ids) => {
     mods = ids.map((id) => mods.find((m) => m.id === id)!);
+    groupPacks();
+  },
+  createPack: async (name, modIds) => {
+    packs = packs.map((p) => ({ ...p, mods: p.mods.filter((m) => !modIds.includes(m)) }));
+    const p: Pack = { id: String(Date.now()), name, notes: "", enabled: true, mods: modIds, created: now() };
+    packs.push(p);
+    groupPacks();
+    return packs.find((x) => x.id === p.id)!;
+  },
+  updatePack: async (id, name, notes) => {
+    packs = packs.map((p) => (p.id === id ? { ...p, name: name ?? p.name, notes: notes ?? p.notes } : p));
+  },
+  setPackEnabled: async (id, enabled) => {
+    packs = packs.map((p) => (p.id === id ? { ...p, enabled } : p));
+  },
+  setModPack: async (modId, packId) => {
+    packs = packs.map((p) => ({ ...p, mods: p.mods.filter((m) => m !== modId).concat(p.id === packId ? [modId] : []) }));
+    if (packId) {
+      const p = packs.find((x) => x.id === packId)!;
+      const m = mods.find((x) => x.id === modId)!;
+      mods = mods.filter((x) => x !== m);
+      const last = p.mods[p.mods.length - 2];
+      mods.splice(last ? mods.findIndex((x) => x.id === last) + 1 : mods.length, 0, m);
+    }
+    groupPacks();
+  },
+  deletePack: async (id, withMods) => {
+    const p = packs.find((x) => x.id === id)!;
+    packs = packs.filter((x) => x.id !== id);
+    if (withMods) mods = mods.filter((m) => !p.mods.includes(m.id));
+  },
+  exportPack: async () => {
+    await wait(400);
+  },
+  importPack: async () => {
+    throw new Error("Importing packs needs the desktop app");
   },
   markVerified: async (id, v) => {
     mods = mods.map((m) => (m.id === id ? { ...m, verifiedBuild: v ? BUILD : null } : m));
@@ -186,7 +238,7 @@ export const mockApi: Api = {
     mods = [...on, ...mods.filter((m) => !p.mods.includes(m.id)).map((m) => ({ ...m, enabled: false }))];
   },
   applyChanges: async () => {
-    applied = mods.filter((m) => m.enabled).map((m) => m.id);
+    applied = mods.filter(active).map((m) => m.id);
     log = [`${now().slice(0, 19)}+00:00  Applied changes`, ...log];
     return { done: [], backup: null };
   },

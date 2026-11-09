@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { ApplyReport, BlenderInstall, Returned, BuildResult, ExtractResult, HeroInfo, Level, ModelBuildResult, ModelHero, ModelProject, ModelSummary, ModMeta, PreviewInfo, Overview, Profile, SafeModeEvent, SoundProject, SoundSearch, SoundUse } from "./types";
+import type { ApplyReport, BlenderInstall, Returned, BuildResult, ExtractResult, HeroInfo, Level, ModelBuildResult, ModelHero, ModelProject, ModelSummary, ModMeta, Pack, PreviewInfo, Overview, Profile, SafeModeEvent, SoundProject, SoundSearch, SoundUse } from "./types";
 import { mockApi } from "./mock";
 
 /** False when the UI is opened in a plain browser (`npm run dev`) for design work. */
@@ -19,6 +19,13 @@ const tauriApi = {
   setEnabled: (id: string, enabled: boolean) => invoke<void>("set_enabled", { id, enabled }),
   setAllEnabled: (enabled: boolean) => invoke<void>("set_all_enabled", { enabled }),
   reorder: (ids: string[]) => invoke<void>("reorder", { ids }),
+  createPack: (name: string, modIds: string[]) => invoke<Pack>("create_pack", { name, modIds }),
+  updatePack: (id: string, name?: string, notes?: string) => invoke<void>("update_pack", { id, name, notes }),
+  setPackEnabled: (id: string, enabled: boolean) => invoke<void>("set_pack_enabled", { id, enabled }),
+  setModPack: (modId: string, packId: string | null) => invoke<void>("set_mod_pack", { modId, packId }),
+  deletePack: (id: string, withMods: boolean) => invoke<void>("delete_pack", { id, withMods }),
+  exportPack: (id: string, path: string) => invoke<void>("export_pack", { id, path }),
+  importPack: (path: string) => invoke<Pack>("import_pack", { path }),
   markVerified: (id: string, verified: boolean) => invoke<void>("mark_verified", { id, verified }),
   saveProfile: (name: string) => invoke<Profile>("save_profile", { name }),
   deleteProfile: (id: string) => invoke<void>("delete_profile", { id }),

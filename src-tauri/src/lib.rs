@@ -50,6 +50,7 @@ struct GameStatus {
 #[serde(rename_all = "camelCase")]
 struct Overview {
     mods: Vec<ModEntry>,
+    packs: Vec<modcore::library::Pack>,
     profiles: Vec<Profile>,
     settings: Settings,
     safe_mode: Option<SafeModeEvent>,
@@ -113,6 +114,7 @@ fn overview_of(lib: &Library) -> CmdResult<Overview> {
     };
     Ok(Overview {
         mods: lib.state.mods.clone(),
+        packs: lib.state.packs.clone(),
         profiles: lib.state.profiles.clone(),
         settings: lib.state.settings.clone(),
         safe_mode: lib.state.safe_mode.clone(),
@@ -217,6 +219,41 @@ fn remove_mod(app: State<App>, id: String) -> CmdResult<()> {
 #[tauri::command]
 fn set_enabled(app: State<App>, id: String, enabled: bool) -> CmdResult<()> {
     app.lib.lock().unwrap().set_enabled(&id, enabled).map_err(err)
+}
+
+#[tauri::command]
+fn create_pack(app: State<App>, name: String, mod_ids: Vec<String>) -> CmdResult<modcore::library::Pack> {
+    app.lib.lock().unwrap().create_pack(&name, &mod_ids).map_err(err)
+}
+
+#[tauri::command]
+fn update_pack(app: State<App>, id: String, name: Option<String>, notes: Option<String>) -> CmdResult<()> {
+    app.lib.lock().unwrap().update_pack(&id, name, notes).map_err(err)
+}
+
+#[tauri::command]
+fn set_pack_enabled(app: State<App>, id: String, enabled: bool) -> CmdResult<()> {
+    app.lib.lock().unwrap().set_pack_enabled(&id, enabled).map_err(err)
+}
+
+#[tauri::command]
+fn set_mod_pack(app: State<App>, mod_id: String, pack_id: Option<String>) -> CmdResult<()> {
+    app.lib.lock().unwrap().set_mod_pack(&mod_id, pack_id.as_deref()).map_err(err)
+}
+
+#[tauri::command]
+fn delete_pack(app: State<App>, id: String, with_mods: bool) -> CmdResult<()> {
+    app.lib.lock().unwrap().delete_pack(&id, with_mods).map_err(err)
+}
+
+#[tauri::command]
+async fn export_pack(app: State<'_, App>, id: String, path: String) -> CmdResult<()> {
+    app.lib.lock().unwrap().export_pack(&id, Path::new(&path)).map_err(err)
+}
+
+#[tauri::command]
+async fn import_pack(app: State<'_, App>, path: String) -> CmdResult<modcore::library::Pack> {
+    app.lib.lock().unwrap().import_pack(Path::new(&path)).map_err(err)
 }
 
 #[tauri::command]
@@ -1021,6 +1058,13 @@ pub fn run() {
             remove_mod,
             set_enabled,
             set_all_enabled,
+            create_pack,
+            update_pack,
+            set_pack_enabled,
+            set_mod_pack,
+            delete_pack,
+            export_pack,
+            import_pack,
             reorder,
             mark_verified,
             save_profile,

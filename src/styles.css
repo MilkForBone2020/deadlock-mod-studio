@@ -496,3 +496,28 @@ details summary { cursor: pointer; color: var(--muted); font-size: 13px; }
 .preview-side .check { justify-content: flex-start; color: var(--text); }
 .preview-side .check input { width: auto; flex: none; margin: 0; padding: 0; accent-color: var(--gold); }
 .preview-side .slider input { width: 100%; padding: 0; border: 0; background: transparent; accent-color: var(--gold); }
+
+/* Mod packs */
+.pack-block { list-style: none; border: 1px solid var(--line-2); border-radius: calc(var(--radius) + 2px); background: rgba(255, 255, 255, 0.015); padding: 6px; display: flex; flex-direction: column; gap: 6px; }
+.pack-block.selected { border-color: rgba(214, 182, 112, 0.55); }
+.pack-block.dragging { opacity: 0.45; }
+.pack-block:not(.enabled) .pack-mods { opacity: 0.55; }
+.pack-head { display: grid; grid-template-columns: 18px 30px 40px minmax(0, 1fr) auto; align-items: center; gap: 12px; padding: 6px 12px 6px 4px; cursor: pointer; border-radius: var(--radius); }
+.pack-head:hover { background: var(--panel-2); }
+.pack-head.drop-target { box-shadow: 0 -2px 0 var(--gold); }
+.pack-head:hover .order-btns, .pack-head:focus-within .order-btns { opacity: 1; }
+.pack-mark { display: grid; place-items: center; color: var(--faint); }
+.pack-block.enabled .pack-mark { color: var(--gold); }
+.pack-block:not(.enabled) .pack-head .mod-name { color: var(--muted); }
+.pack-mods { list-style: none; margin: 0 0 0 22px; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.pick-list { list-style: none; margin: 8px 0 0; padding: 0; display: flex; flex-direction: column; gap: 2px; max-height: 340px; overflow-y: auto; }
+.pick-list label { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 10px; align-items: center; padding: 7px 8px; border-radius: 7px; cursor: pointer; }
+.pick-list label:hover { background: var(--panel-2); }
+.pick-list input { width: auto; margin: 0; accent-color: var(--gold); }
+.pick-name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.pack-switch { display: flex; gap: 12px; align-items: flex-start; }
+.pack-switch p { margin: 2px 0 0; }
+.pack-member-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.pack-member-list li { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 10px; align-items: center; }
+.pack-member-list .link { text-align: left; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pack-pick select { width: 100%; }

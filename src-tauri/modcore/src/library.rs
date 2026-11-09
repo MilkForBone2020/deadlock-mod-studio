@@ -56,6 +56,56 @@ pub struct Profile {
     pub mods: Vec<String>,
 }
 
+/// Mods grouped into one pack (e.g. a full Seven pack). The pack's switch
+/// turns the whole pack on or off; each mod keeps its own switch. Members
+/// always sit together in the load order.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct Pack {
+    pub id: String,
+    pub name: String,
+    #[serde(default)]
+    pub notes: String,
+    pub enabled: bool,
+    /// Member mod ids (their order is the library order).
+    pub mods: Vec<String>,
+    pub created: String,
+}
+
+/// `pack.json` inside an exported pack file.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+struct PackFile {
+    format: u32,
+    name: String,
+    #[serde(default)]
+    notes: String,
+    mods: Vec<PackFileMod>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+struct PackFileMod {
+    name: String,
+    #[serde(default)]
+    kind: ModKind,
+    #[serde(default)]
+    hero: String,
+    #[serde(default)]
+    notes: String,
+    #[serde(default)]
+    version: String,
+    #[serde(default)]
+    enabled: bool,
+    #[serde(default)]
+    original_name: String,
+    /// Path of the VPK inside the pack file.
+    file: String,
+}
+
+/// Exported packs: a zip with `pack.json` and the VPKs.
+pub const PACK_EXT: &str = "dmpack";
+
 /// A file the app placed in `addons`. Anything not listed here is never
 /// touched.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -167,6 +217,8 @@ pub struct State {
     pub sound_projects: Vec<SoundProject>,
     #[serde(default)]
     pub model_projects: Vec<ModelProject>,
+    #[serde(default)]
+    pub packs: Vec<Pack>,
 }
 
 impl Default for State {
@@ -181,6 +233,7 @@ impl Default for State {
             safe_mode: None,
             sound_projects: Vec::new(),
             model_projects: Vec::new(),
+            packs: Vec::new(),
         }
     }
 }
@@ -386,6 +439,7 @@ impl Library {
         for p in &mut self.state.profiles {
             p.mods.retain(|x| x != id);
         }
+        self.group_packs();
         self.log(&format!("Removed \"{}\" from the library", m.name));
         self.save()
     }
@@ -421,7 +475,223 @@ impl Library {
             }
         }
         self.state.mods = out;
+        self.group_packs();
         self.save()
+    }
+
+    // ------------------------------------------------------------ packs ---
+
+    pub fn pack_of(&self, mod_id: &str) -> Option<&Pack> {
+        self.state.packs.iter().find(|p| p.mods.iter().any(|m| m == mod_id))
+    }
+
+    /// Will this mod load: switched on, and so is its pack (if any)?
+    pub fn is_active(&self, m: &ModEntry) -> bool {
+        m.enabled && self.pack_of(&m.id).map(|p| p.enabled).unwrap_or(true)
+    }
+
+    /// The mods that load, in load order.
+    pub fn active_mods(&self) -> Vec<&ModEntry> {
+        self.state.mods.iter().filter(|m| self.is_active(m)).collect()
+    }
+
+    fn pack_mut(&mut self, id: &str) -> Result<&mut Pack> {
+        self.state.packs.iter_mut().find(|p| p.id == id).ok_or_else(|| Error::msg("That pack no longer exists"))
+    }
+
+    /// Keep packs tidy: drop missing mods and empty packs, list members in
+    /// library order, and move each pack's mods together at the place of
+    /// its first one.
+    pub fn group_packs(&mut self) {
+        let ids: Vec<String> = self.state.mods.iter().map(|m| m.id.clone()).collect();
+        for p in &mut self.state.packs {
+            p.mods = ids.iter().filter(|id| p.mods.contains(id)).cloned().collect();
+        }
+        self.state.packs.retain(|p| !p.mods.is_empty());
+        let mut out: Vec<ModEntry> = Vec::with_capacity(self.state.mods.len());
+        let mut placed: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mods = std::mem::take(&mut self.state.mods);
+        for m in &mods {
+            if placed.contains(&m.id) {
+                continue;
+            }
+            match self.state.packs.iter().find(|p| p.mods.contains(&m.id)) {
+                Some(p) => {
+                    for id in &p.mods {
+                        if let Some(x) = mods.iter().find(|x| &x.id == id) {
+                            placed.insert(id.clone());
+                            out.push(x.clone());
+                        }
+                    }
+                }
+                None => {
+                    placed.insert(m.id.clone());
+                    out.push(m.clone());
+                }
+            }
+        }
+        self.state.mods = out;
+    }
+
+    /// Group mods into a new pack (taking them out of any other pack).
+    pub fn create_pack(&mut self, name: &str, mod_ids: &[String]) -> Result<Pack> {
+        let name = name.trim();
+        if name.is_empty() {
+            return Err(Error::msg("Give the pack a name"));
+        }
+        let ids: Vec<String> = mod_ids.iter().filter(|id| self.state.mods.iter().any(|m| &m.id == *id)).cloned().collect();
+        if ids.is_empty() {
+            return Err(Error::msg("Pick at least one mod for the pack"));
+        }
+        for p in &mut self.state.packs {
+            p.mods.retain(|m| !ids.contains(m));
+        }
+        let pack = Pack { id: uuid::Uuid::new_v4().simple().to_string()[..12].to_string(), name: name.to_string(), notes: String::new(), enabled: true, mods: ids, created: now() };
+        self.state.packs.push(pack.clone());
+        self.group_packs();
+        self.log(&format!("Made the pack \"{}\" ({} mods)", pack.name, pack.mods.len()));
+        self.save()?;
+        Ok(self.state.packs.iter().find(|p| p.id == pack.id).cloned().unwrap_or(pack))
+    }
+
+    pub fn update_pack(&mut self, id: &str, name: Option<String>, notes: Option<String>) -> Result<()> {
+        let p = self.pack_mut(id)?;
+        if let Some(n) = name.filter(|s| !s.trim().is_empty()) {
+            p.name = n.trim().to_string();
+        }
+        if let Some(n) = notes {
+            p.notes = n;
+        }
+        self.save()
+    }
+
+    pub fn set_pack_enabled(&mut self, id: &str, enabled: bool) -> Result<()> {
+        self.pack_mut(id)?.enabled = enabled;
+        self.save()
+    }
+
+    /// Put a mod in a pack (None: take it out of its pack).
+    pub fn set_mod_pack(&mut self, mod_id: &str, pack_id: Option<&str>) -> Result<()> {
+        self.get(mod_id)?;
+        if let Some(pid) = pack_id {
+            self.pack_mut(pid)?;
+        }
+        for p in &mut self.state.packs {
+            p.mods.retain(|m| m != mod_id);
+        }
+        if let Some(pid) = pack_id {
+            // Joins at the end of the pack.
+            let p = self.pack_mut(pid)?;
+            p.mods.push(mod_id.to_string());
+            let last = p.mods.iter().rev().nth(1).cloned();
+            if let Some(last) = last {
+                let from = self.state.mods.iter().position(|m| m.id == mod_id).unwrap();
+                let m = self.state.mods.remove(from);
+                let at = self.state.mods.iter().position(|x| x.id == last).map(|i| i + 1).unwrap_or(self.state.mods.len());
+                self.state.mods.insert(at, m);
+            }
+        }
+        self.group_packs();
+        self.save()
+    }
+
+    /// Remove a pack. `with_mods`: delete its mods from the library too;
+    /// otherwise they stay as loose mods.
+    pub fn delete_pack(&mut self, id: &str, with_mods: bool) -> Result<()> {
+        let p = self.state.packs.iter().find(|p| p.id == id).cloned().ok_or_else(|| Error::msg("That pack no longer exists"))?;
+        self.state.packs.retain(|x| x.id != id);
+        if with_mods {
+            for m in &p.mods {
+                self.remove_mod(m)?;
+            }
+        }
+        self.log(&format!("Removed the pack \"{}\"{}", p.name, if with_mods { " and its mods" } else { "" }));
+        self.save()
+    }
+
+    /// Write a pack and its VPKs to one file.
+    pub fn export_pack(&self, id: &str, dest: &Path) -> Result<()> {
+        let p = self.state.packs.iter().find(|p| p.id == id).ok_or_else(|| Error::msg("That pack no longer exists"))?;
+        let file = std::fs::File::create(dest).at(dest)?;
+        let mut zip = zip::ZipWriter::new(file);
+        let stored = zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored).large_file(true);
+        let mut entries = vec![];
+        for (i, id) in p.mods.iter().enumerate() {
+            let m = self.get(id)?;
+            let safe: String = m.name.chars().map(|c| if c.is_ascii_alphanumeric() || c == '-' { c } else { '_' }).collect();
+            let inner = format!("mods/{:02}_{}.vpk", i + 1, safe.trim_matches('_'));
+            let src = self.stored_path(m);
+            zip.start_file(inner.as_str(), stored).map_err(|e| Error::msg(e.to_string()))?;
+            let mut f = std::fs::File::open(&src).at(&src)?;
+            std::io::copy(&mut f, &mut zip).at(dest)?;
+            entries.push(PackFileMod { name: m.name.clone(), kind: m.kind, hero: m.hero.clone(), notes: m.notes.clone(), version: m.version.clone(), enabled: m.enabled, original_name: m.original_name.clone(), file: inner });
+        }
+        let json = serde_json::to_vec_pretty(&PackFile { format: 1, name: p.name.clone(), notes: p.notes.clone(), mods: entries })?;
+        zip.start_file("pack.json", zip::write::SimpleFileOptions::default()).map_err(|e| Error::msg(e.to_string()))?;
+        zip.write_all(&json).at(dest)?;
+        zip.finish().map_err(|e| Error::msg(e.to_string()))?;
+        self.log(&format!("Exported the pack \"{}\" to {}", p.name, dest.display()));
+        Ok(())
+    }
+
+    /// Import a pack file: its mods join the library (off, at the bottom)
+    /// as a new pack.
+    pub fn import_pack(&mut self, src: &Path) -> Result<Pack> {
+        let file = std::fs::File::open(src).at(src)?;
+        let mut zip = zip::ZipArchive::new(file).map_err(|_| Error::msg("That isn't a pack file"))?;
+        let pf: PackFile = {
+            let mut e = zip.by_name("pack.json").map_err(|_| Error::msg("That isn't a pack file (no pack.json)"))?;
+            let mut b = vec![];
+            std::io::Read::read_to_end(&mut e, &mut b).at(src)?;
+            serde_json::from_slice(&b).map_err(|e| Error::msg(format!("The pack file is damaged: {e}")))?
+        };
+        if pf.format > 1 {
+            return Err(Error::msg("This pack was made by a newer version of the app. Update first."));
+        }
+        let tmp = self.root.join(format!("import_{}", &uuid::Uuid::new_v4().simple().to_string()[..8]));
+        std::fs::create_dir_all(&tmp).at(&tmp)?;
+        let mut ids = vec![];
+        let result = self.import_pack_mods(&mut zip, &pf, &tmp, &mut ids);
+        let _ = std::fs::remove_dir_all(&tmp);
+        if let Err(e) = result {
+            // Nothing half-imported is left behind.
+            for id in &ids {
+                let _ = self.remove_mod(id);
+            }
+            return Err(e);
+        }
+        let mut pack = self.create_pack(&pf.name, &ids)?;
+        // Arrives switched off, like any import.
+        pack.enabled = false;
+        pack.notes = pf.notes;
+        let id = pack.id.clone();
+        let p = self.pack_mut(&id)?;
+        p.enabled = false;
+        p.notes = pack.notes.clone();
+        self.save()?;
+        Ok(pack)
+    }
+
+    fn import_pack_mods(&mut self, zip: &mut zip::ZipArchive<std::fs::File>, pf: &PackFile, tmp: &Path, ids: &mut Vec<String>) -> Result<()> {
+        for (i, pm) in pf.mods.iter().enumerate() {
+            let out = tmp.join(format!("{i}.vpk"));
+            {
+                let mut e = zip.by_name(&pm.file).map_err(|_| Error::msg(format!("The pack is missing {}", pm.file)))?;
+                let mut f = std::fs::File::create(&out).at(&out)?;
+                std::io::copy(&mut e, &mut f).at(&out)?;
+            }
+            let meta = ModMeta { name: Some(pm.name.clone()), kind: Some(pm.kind), hero: Some(pm.hero.clone()), notes: Some(pm.notes.clone()), version: Some(pm.version.clone()) };
+            let mut entry = self.import_vpk(&out, meta)?;
+            if !pm.original_name.is_empty() {
+                entry.original_name = pm.original_name.clone();
+            }
+            let m = self.get_mut(&entry.id)?;
+            m.original_name = entry.original_name.clone();
+            m.enabled = pm.enabled;
+            let _ = std::fs::remove_file(&out);
+            ids.push(entry.id);
+        }
+        Ok(())
     }
 
     pub fn mark_verified(&mut self, id: &str, build: Option<String>) -> Result<()> {
@@ -436,8 +706,7 @@ impl Library {
         if name.is_empty() {
             return Err(Error::msg("Give the profile a name"));
         }
-        let mods: Vec<String> =
-            self.state.mods.iter().filter(|m| m.enabled).map(|m| m.id.clone()).collect();
+        let mods: Vec<String> = self.active_mods().iter().map(|m| m.id.clone()).collect();
         let profile = if let Some(p) =
             self.state.profiles.iter_mut().find(|p| p.name.eq_ignore_ascii_case(name))
         {
@@ -494,13 +763,21 @@ impl Library {
             out.push(m);
         }
         self.state.mods = out;
+        // A pack with a mod in the profile is switched on (its other mods
+        // are off by now).
+        for pk in &mut self.state.packs {
+            if pk.mods.iter().any(|id| p.mods.contains(id)) {
+                pk.enabled = true;
+            }
+        }
+        self.group_packs();
         self.save()
     }
 
     /// Internal files changed by more than one enabled mod.
     pub fn conflicts(&self) -> Vec<Conflict> {
         let mut map: BTreeMap<&str, Vec<String>> = BTreeMap::new();
-        for m in self.state.mods.iter().filter(|m| m.enabled) {
+        for m in self.active_mods() {
             for f in &m.files {
                 map.entry(f.as_str()).or_default().push(m.id.clone());
             }
@@ -525,8 +802,7 @@ impl Library {
             }
             Some(prev) if prev == current => Ok(BuildCheck::Same),
             Some(prev) => {
-                let disabled: Vec<String> =
-                    self.state.mods.iter().filter(|m| m.enabled).map(|m| m.name.clone()).collect();
+                let disabled: Vec<String> = self.active_mods().iter().map(|m| m.name.clone()).collect();
                 for m in &mut self.state.mods {
                     m.enabled = false;
                 }
@@ -1021,5 +1297,72 @@ mod tests {
         lib.delete_model_project(&p.id).unwrap();
         assert!(!lib.model_dir(&p.id).exists());
         assert!(lib.get(&id).is_ok());
+    }
+
+    #[test]
+    fn packs_group_switch_and_load_together() {
+        let (_t, mut lib) = lib_with(5);
+        let ids: Vec<String> = lib.state.mods.iter().map(|m| m.id.clone()).collect();
+        for id in &ids {
+            lib.set_enabled(id, true).unwrap();
+        }
+        // Pack mods 1 and 3: they end up next to each other at mod 1's place.
+        let p = lib.create_pack("Seven", &[ids[3].clone(), ids[1].clone()]).unwrap();
+        let order: Vec<&str> = lib.state.mods.iter().map(|m| m.id.as_str()).collect();
+        assert_eq!(order, [&ids[0], &ids[1], &ids[3], &ids[2], &ids[4]].iter().map(|s| s.as_str()).collect::<Vec<_>>());
+        assert_eq!(p.mods, vec![ids[1].clone(), ids[3].clone()]);
+        // The pack switch overrides the members' own switches.
+        lib.set_pack_enabled(&p.id, false).unwrap();
+        let active: Vec<&str> = lib.active_mods().iter().map(|m| m.id.as_str()).collect();
+        assert_eq!(active, vec![ids[0].as_str(), ids[2].as_str(), ids[4].as_str()]);
+        assert!(lib.get(&ids[1]).unwrap().enabled, "member keeps its own switch");
+        lib.set_pack_enabled(&p.id, true).unwrap();
+        assert_eq!(lib.active_mods().len(), 5);
+        // Reordering can't split a pack.
+        let mut r: Vec<String> = lib.state.mods.iter().map(|m| m.id.clone()).collect();
+        let x = r.remove(2); // ids[3]
+        r.push(x);
+        lib.reorder(&r).unwrap();
+        let pos = |lib: &Library, id: &str| lib.state.mods.iter().position(|m| m.id == id).unwrap();
+        assert_eq!(pos(&lib, &ids[3]), pos(&lib, &ids[1]) + 1);
+        // Joining and leaving.
+        lib.set_mod_pack(&ids[4], Some(&p.id)).unwrap();
+        assert_eq!(lib.pack_of(&ids[4]).unwrap().mods.last().unwrap(), &ids[4]);
+        assert_eq!(pos(&lib, &ids[4]), pos(&lib, &ids[3]) + 1);
+        lib.set_mod_pack(&ids[4], None).unwrap();
+        assert!(lib.pack_of(&ids[4]).is_none());
+        // Removing every member removes the pack.
+        lib.remove_mod(&ids[1]).unwrap();
+        lib.remove_mod(&ids[3]).unwrap();
+        assert!(lib.state.packs.is_empty());
+    }
+
+    #[test]
+    fn packs_export_and_import() {
+        let (t, mut lib) = lib_with(3);
+        let ids: Vec<String> = lib.state.mods.iter().map(|m| m.id.clone()).collect();
+        lib.set_enabled(&ids[0], true).unwrap();
+        lib.update_meta(&ids[0], ModMeta { hero: Some("Seven".into()), ..Default::default() }).unwrap();
+        let p = lib.create_pack("Full Seven", &[ids[0].clone(), ids[2].clone()]).unwrap();
+        lib.update_pack(&p.id, None, Some("hat and sounds".into())).unwrap();
+        let file = t.path().join(format!("seven.{PACK_EXT}"));
+        lib.export_pack(&p.id, &file).unwrap();
+        let before = lib.state.mods.len();
+        let q = lib.import_pack(&file).unwrap();
+        assert_eq!(lib.state.mods.len(), before + 2);
+        assert_eq!(q.name, "Full Seven");
+        assert_eq!(q.notes, "hat and sounds");
+        assert!(!lib.state.packs.iter().find(|x| x.id == q.id).unwrap().enabled, "imports arrive off");
+        let first = lib.get(&q.mods[0]).unwrap();
+        assert_eq!(first.hero, "Seven");
+        assert!(first.enabled, "members keep their own switches");
+        assert_eq!(first.files, lib.get(&ids[0]).unwrap().files);
+        assert!(lib.active_mods().iter().all(|m| !q.mods.contains(&m.id)));
+        // Delete the pack but keep its mods; then delete one with its mods.
+        lib.delete_pack(&p.id, false).unwrap();
+        assert_eq!(lib.state.mods.len(), before + 2);
+        lib.delete_pack(&q.id, true).unwrap();
+        assert_eq!(lib.state.mods.len(), before);
+        assert!(lib.import_pack(&lib.stored_path(lib.get(&ids[1]).unwrap())).is_err(), "a VPK isn't a pack");
     }
 }
