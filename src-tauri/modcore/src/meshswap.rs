@@ -336,6 +336,13 @@ pub fn swap(original: &[u8], meshes: &[&SkinnedMesh], materials: &HashMap<String
         face_sets.push(fs as i32);
     }
     d.elements[mesh_el].set("faceSets", dmx::i32_array(dmx::T_ELEMENT, &face_sets));
+    // A part can hold several meshes (Celeste's body: skin, hair, clothes...).
+    // The new geometry went into the first; the others go.
+    let others: std::collections::HashSet<usize> = d.find_type("DmeDag").into_iter().filter(|&g| d.elements[g].element("shape").is_some_and(|m| m != mesh_el)).collect();
+    // Their nodes stay (the joint list's order matters), without a mesh.
+    for g in others {
+        d.elements[g].set("shape", Attr::Element(-1));
+    }
     d.compact();
     Ok(Swap::Replaced { dmx: dmx::write(&d), vertices: n, triangles: all_tris.len() / 3 })
 }
