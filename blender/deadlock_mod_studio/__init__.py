@@ -20,7 +20,7 @@ import bpy
 from bpy.props import EnumProperty, StringProperty
 from mathutils import Vector
 
-ADDON_VERSION = "0.1.5"
+ADDON_VERSION = "0.1.6"
 MAX_WEIGHTS = 4
 # Fairness rule: a custom model stays close to the original's size. Smaller
 # is the unfair direction; accessories that stick out make you easier to see.
@@ -571,13 +571,20 @@ class DMS_OT_attach_to_bone(bpy.types.Operator):
         if not arm or not self.bone or self.bone not in arm.data.bones:
             self.report({"WARNING"}, "Pick one of the rig's bones")
             return {"CANCELLED"}
+        # Never the hero's own meshes: weighting a whole body to one bone
+        # would make it move like a statue.
+        project = load_project(context.scene)
+        own = set(part_names(project))
+        skipped = [o.name for o in objs if o.name.split(".")[0] in own or len(o.vertex_groups) > 1]
+        objs = [o for o in objs if o.name not in skipped]
         if not objs:
-            self.report({"WARNING"}, "Select the mesh objects first")
+            self.report({"WARNING"}, "Select only your new object (like the hat). The hero's own parts are already rigged" if skipped else "Select the mesh objects first")
             return {"CANCELLED"}
         if context.object and context.object.mode != "OBJECT":
             bpy.ops.object.mode_set(mode="OBJECT")
         parts = sorted({attach_to_bone(o, arm, self.bone, context.scene) for o in objs})
-        self.report({"INFO"}, f"{len(objs)} object(s) attached to {self.bone} (part: {', '.join(parts)})")
+        note = f"; left alone: {', '.join(skipped[:4])} (already rigged)" if skipped else ""
+        self.report({"INFO"}, f"{len(objs)} object(s) attached to {self.bone} (part: {', '.join(parts)}){note}")
         return {"FINISHED"}
 
 
