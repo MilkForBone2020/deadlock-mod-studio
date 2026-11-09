@@ -512,7 +512,14 @@ function ModelReportModal({ r, heroName, close, goLibrary }: { r: ModelBuildResu
       {r.report.warnings.length > 0 && (
         <>
           <h3>Compiler warnings ({r.report.warnings.length})</h3>
-          <pre className="log-pre">{r.report.warnings.join("\n")}</pre>
+          {r.report.warnings.some((w) => /cloth/i.test(w)) && (
+            <p className="hint">Cloth warnings come from Valve's own cloth setup and show up on the unchanged hero too. If the cloth moves in game, they're harmless.</p>
+          )}
+          <ul className="warn-lines">
+            {r.report.warnings.map((w, i) => (
+              <li key={i}>{w.replace(/^RESOURCE COMPILE WARNING:\s*/i, "")}</li>
+            ))}
+          </ul>
         </>
       )}
       <details>

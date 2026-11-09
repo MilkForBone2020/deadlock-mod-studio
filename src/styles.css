@@ -288,6 +288,11 @@ textarea { resize: vertical; }
 }
 .modal-head { display: flex; justify-content: space-between; align-items: center; padding: 18px 18px 14px 24px; border-bottom: 1px solid var(--line); }
 .modal-body { padding: 18px 24px; overflow-y: auto; display: flex; flex-direction: column; gap: 20px; }
+/* Children keep their height: the body scrolls instead of squashing them. */
+.modal-body > * { flex-shrink: 0; min-width: 0; }
+.modal-body code { overflow-wrap: anywhere; }
+.warn-lines { list-style: none; margin: 0; padding: 10px; display: flex; flex-direction: column; gap: 6px; max-height: 260px; overflow: auto; font-family: var(--mono); font-size: 11.5px; color: var(--muted); background: var(--bg); border: 1px solid var(--line); border-radius: 8px; }
+.warn-lines li { white-space: pre-wrap; overflow-wrap: anywhere; }
 .modal-foot { display: flex; gap: 8px; align-items: center; justify-content: flex-end; padding: 14px 18px 16px 24px; border-top: 1px solid var(--line); }
 .modal-foot .hint { margin-right: auto; }
 .plan-group { display: flex; flex-direction: column; gap: 8px; }

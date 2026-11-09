@@ -309,7 +309,7 @@ export const mockApi: Api = {
             ]
           : [],
         materials: withModel ? [{ material: "gigawatt_prisoner", path: "models/heroes_staging/gigawatt_prisoner/materials/gigawatt_prisoner.vmat", color: "x_dms_color.png", size: [2048, 2048], resized: false, new: false }, { material: "Top Hat Felt", path: "models/heroes_staging/gigawatt_prisoner/dms_materials/top_hat_felt.vmat", color: "top_hat_felt_color.png", size: [4, 4], resized: false, new: true }] : [],
-        vpk: "x.vpk", vpkSize: 21_400_000, files: [`${p.model}_c`, p.model.replace(".vmdl", "_backup.vmdl_c")], warnings: ["WARNING: Unknown game data class CCitadelHeroModelGameData_t"], log: "OK: 1 compiled, 0 failed, 0 skipped" },
+        vpk: "x.vpk", vpkSize: 21_400_000, files: [`${p.model}_c`, p.model.replace(".vmdl", "_backup.vmdl_c")], warnings: ["WARNING: Unknown game data class CCitadelHeroModelGameData_t", ...Array.from({ length: 7 }, (_, i) => `RESOURCE COMPILE WARNING: ClothChain: arm_lower_R : 2 warnings, while processing node ${i} of models/heroes_staging/gigawatt_prisoner/gigawatt_prisoner.vmdl`)], log: "OK: 1 compiled, 0 failed, 0 skipped" },
     };
   },
   detectBlender: async () => [{ exe: "C:\\Program Files\\Blender Foundation\\Blender 5.0\\blender.exe", version: "5.0" }],
