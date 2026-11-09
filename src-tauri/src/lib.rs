@@ -61,6 +61,7 @@ struct Overview {
     sound_projects: Vec<SoundProject>,
     csdk_found: bool,
     model_projects: Vec<ModelProject>,
+    icon_projects: Vec<modcore::library::IconProject>,
     /// Whether Source 2 Viewer's command-line tool is installed.
     s2v_installed: bool,
     /// The Source 2 Viewer version extracts should use.
@@ -132,6 +133,7 @@ fn overview_of(lib: &Library) -> CmdResult<Overview> {
         sound_projects: lib.state.sound_projects.clone(),
         csdk_found: lib.state.settings.csdk_dir.as_deref().map(|d| csdk::is_csdk_dir(Path::new(d))).unwrap_or(false),
         model_projects: lib.state.model_projects.clone(),
+        icon_projects: lib.state.icon_projects.clone(),
         s2v_installed: tools::s2v_exe(&lib.root.join("tools")).is_some(),
         s2v_version: model::S2V_VERSION.to_string(),
     })
@@ -680,6 +682,111 @@ fn hero_model_list(app: &App, cat: &Catalog) -> CmdResult<Vec<ModelHero>> {
         .collect())
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct IconHero {
+    code: String,
+    name: String,
+    /// (hero data field, game image path) for each portrait slot.
+    images: Vec<(String, String)>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct IconSlot {
+    field: String,
+    label: String,
+    width: u32,
+    height: u32,
+}
+
+fn icon_hero_list(app: &App, cat: &Catalog) -> CmdResult<Vec<IconHero>> {
+    let d = game_index(app)?;
+    let e = d.find("scripts/heroes.vdata_c").ok_or("The game's hero list (scripts/heroes.vdata) is missing")?;
+    let kv = modcore::kv3::parse_resource(&d.extract(e).map_err(err)?).map_err(err)?;
+    let models = model::hero_models(&kv);
+    Ok(cat
+        .heroes
+        .iter()
+        .filter_map(|h| models.iter().find(|m| m.code == h.code).map(|m| IconHero { code: h.code.clone(), name: h.name.clone(), images: m.icons.clone() }))
+        .collect())
+}
+
+/// Heroes and their portrait slots.
+#[tauri::command]
+async fn icon_heroes(app: State<'_, App>) -> CmdResult<(Vec<IconHero>, Vec<IconSlot>)> {
+    let cat = catalog_of(&app).await?;
+    let slots = modcore::icons::SLOTS.iter().map(|s| IconSlot { field: s.0.into(), label: s.1.into(), width: s.2, height: s.3 }).collect();
+    Ok((icon_hero_list(&app, &cat)?, slots))
+}
+
+#[tauri::command]
+fn create_icon_project(app: State<App>, name: String, hero: String) -> CmdResult<modcore::library::IconProject> {
+    app.lib.lock().unwrap().create_icon_project(&name, &hero).map_err(err)
+}
+
+#[tauri::command]
+fn update_icon_project(app: State<App>, id: String, name: Option<String>, field: Option<String>, source: Option<String>) -> CmdResult<()> {
+    app.lib.lock().unwrap().update_icon_project(&id, name, field.map(|f| (f, source))).map_err(err)
+}
+
+#[tauri::command]
+fn delete_icon_project(app: State<App>, id: String) -> CmdResult<()> {
+    app.lib.lock().unwrap().delete_icon_project(&id).map_err(err)
+}
+
+/// A picture fitted to a slot, as PNG bytes (what the build will use).
+#[tauri::command]
+async fn icon_preview(field: String, source: String) -> CmdResult<tauri::ipc::Response> {
+    tauri::async_runtime::spawn_blocking(move || modcore::icons::preview_png(Path::new(&source), &field))
+        .await
+        .map_err(|e| e.to_string())?
+        .map(tauri::ipc::Response::new)
+        .map_err(err)
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct IconBuildResult {
+    report: modcore::icons::IconBuildReport,
+    mod_id: String,
+    mod_name: String,
+}
+
+#[tauri::command]
+async fn build_icon_project(app_handle: tauri::AppHandle, app: State<'_, App>, id: String) -> CmdResult<IconBuildResult> {
+    let cat = catalog_of(&app).await?;
+    let heroes = icon_hero_list(&app, &cat)?;
+    let (project, csdk_dir, out) = {
+        let lib = app.lib.lock().unwrap();
+        let p = lib.state.icon_projects.iter().find(|p| p.id == id).cloned().ok_or("That portrait project no longer exists")?;
+        let c = lib.state.settings.csdk_dir.clone().ok_or("Set the CSDK folder in Settings first")?;
+        let safe: String = p.name.chars().map(|c| if c.is_ascii_alphanumeric() || c == '-' { c } else { '_' }).collect();
+        (p.clone(), PathBuf::from(c), lib.root.join("builds").join(format!("{}_{}.vpk", safe.trim_matches('_'), &p.id[..4])))
+    };
+    let hero = heroes.iter().find(|h| h.code == project.hero).ok_or("That hero wasn't found in the game files")?;
+    if !steam_running() {
+        return Err("Start Steam first: CSDK's compiler needs it running.".into());
+    }
+    let jobs: Vec<modcore::icons::IconJob> = project.images.iter().map(|(f, s)| modcore::icons::IconJob { field: f.clone(), source: s.clone() }).collect();
+    let images = hero.images.clone();
+    let slug = format!("{}_{}", project.name, &project.id[..4]);
+    let h = app_handle.clone();
+    let report = tauri::async_runtime::spawn_blocking(move || {
+        modcore::icons::build(&csdk_dir, &slug, &images, &jobs, &out, &csdk::run_compiler, &|m| {
+            let _ = h.emit("icon-progress", m.to_string());
+        })
+    })
+    .await
+    .map_err(|e| e.to_string())?
+    .map_err(err)?;
+    let mut lib = app.lib.lock().unwrap();
+    let mod_id = lib.store_icon_build(&id, Path::new(&report.vpk), &hero.name).map_err(err)?;
+    let mod_name = lib.get(&mod_id).map(|m| m.name.clone()).unwrap_or_default();
+    lib.log(&format!("Built portrait mod \"{}\" ({} images)", mod_name, report.files.len()));
+    Ok(IconBuildResult { report, mod_id, mod_name })
+}
+
 /// Heroes whose model can be replaced, with their model paths.
 #[tauri::command]
 async fn model_heroes(app: State<'_, App>) -> CmdResult<Vec<ModelHero>> {
@@ -1091,6 +1198,12 @@ pub fn run() {
             sound_heroes,
             describe_sounds,
             model_heroes,
+            icon_heroes,
+            create_icon_project,
+            update_icon_project,
+            delete_icon_project,
+            icon_preview,
+            build_icon_project,
             create_model_project,
             rename_model_project,
             delete_model_project,

@@ -71,6 +71,35 @@ export interface Pack {
   created: string;
 }
 
+export interface IconProject {
+  id: string;
+  name: string;
+  hero: string;
+  /** Hero data field -> my picture file. */
+  images: Record<string, string>;
+  modId: string | null;
+  lastBuilt: string | null;
+}
+
+export interface IconHero {
+  code: string;
+  name: string;
+  images: [string, string][];
+}
+
+export interface IconSlot {
+  field: string;
+  label: string;
+  width: number;
+  height: number;
+}
+
+export interface IconBuildResult {
+  report: { files: string[]; vpk: string; vpkSize: number; log: string };
+  modId: string;
+  modName: string;
+}
+
 export interface Overview {
   mods: ModEntry[];
   packs: Pack[];
@@ -84,6 +113,7 @@ export interface Overview {
   soundProjects: SoundProject[];
   csdkFound: boolean;
   modelProjects: ModelProject[];
+  iconProjects: IconProject[];
   s2vInstalled: boolean;
   s2vVersion: string;
 }

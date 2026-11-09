@@ -71,6 +71,10 @@ src-tauri\target\release\bundle\nsis\Deadlock Mod Studio_0.1.0_x64-setup.exe
 Which number wins when two mods change the same file hasn't been tested yet:
 enable two mods that share a file (the app flags these) and see which one plays.
 
+## Portraits
+
+**Portraits** replaces a hero's pictures: the card in the HUD's top bar and menus (280 × 380), its low-health and gloating versions (swapped in by the game), the tall icon (120 × 200), the small icon (128 × 128) and the minimap icon (50 × 50). Pick a picture per slot (render at 2× for sharper results); the app crops it to the slot's shape (tall pictures keep their top), writes a flat PSD at the game's path (`panorama/images/heroes/<hero>_card.psd`, as the hero data names it), compiles it with CSDK to the name the game loads (`<hero>_card_psd.vtex_c`) and packs a VPK into the library (`modcore/src/icons.rs`). Slots left empty keep Valve's pictures. **Fill icons from card** crops your card for the small, tall and minimap icons.
+
 ## Mod packs
 
 Group mods into a pack (Library → **New pack**, or a mod's **Pack** picker), e.g. a full Seven pack with his model, sounds and HUD. The pack shows as one card with its own switch: off means none of its mods load; on means each mod follows its own switch. A pack's mods always sit together in the load order and move as one. **Export pack…** writes one `.dmpack` file (a zip with `pack.json` and the VPKs); import it with **Import** or by dropping it on the window. Imported packs start switched off.

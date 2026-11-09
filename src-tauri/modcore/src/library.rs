@@ -56,6 +56,22 @@ pub struct Profile {
     pub mods: Vec<String>,
 }
 
+/// Hero portraits being made in the app: a picture per image slot (hero
+/// data field -> my file). Building it produces (or updates) a library mod.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct IconProject {
+    pub id: String,
+    pub name: String,
+    pub hero: String,
+    #[serde(default)]
+    pub images: BTreeMap<String, String>,
+    #[serde(default)]
+    pub mod_id: Option<String>,
+    #[serde(default)]
+    pub last_built: Option<String>,
+}
+
 /// Mods grouped into one pack (e.g. a full Seven pack). The pack's switch
 /// turns the whole pack on or off; each mod keeps its own switch. Members
 /// always sit together in the load order.
@@ -219,6 +235,8 @@ pub struct State {
     pub model_projects: Vec<ModelProject>,
     #[serde(default)]
     pub packs: Vec<Pack>,
+    #[serde(default)]
+    pub icon_projects: Vec<IconProject>,
 }
 
 impl Default for State {
@@ -234,6 +252,7 @@ impl Default for State {
             sound_projects: Vec::new(),
             model_projects: Vec::new(),
             packs: Vec::new(),
+            icon_projects: Vec::new(),
         }
     }
 }
@@ -1059,6 +1078,70 @@ impl Library {
             }
         };
         let pm = self.model_project_mut(project_id)?;
+        pm.mod_id = Some(mod_id.clone());
+        pm.last_built = Some(now());
+        self.save()?;
+        Ok(mod_id)
+    }
+
+    // ---------------------------------------------------- icon projects ---
+
+    fn icon_project_mut(&mut self, id: &str) -> Result<&mut IconProject> {
+        self.state.icon_projects.iter_mut().find(|p| p.id == id).ok_or_else(|| Error::msg("That portrait project no longer exists"))
+    }
+
+    pub fn create_icon_project(&mut self, name: &str, hero: &str) -> Result<IconProject> {
+        let name = name.trim();
+        if name.is_empty() {
+            return Err(Error::msg("Give the portraits a name"));
+        }
+        let p = IconProject { id: uuid::Uuid::new_v4().simple().to_string()[..12].to_string(), name: name.to_string(), hero: hero.to_string(), images: BTreeMap::new(), mod_id: None, last_built: None };
+        self.state.icon_projects.push(p.clone());
+        self.save()?;
+        Ok(p)
+    }
+
+    /// Rename, or set (Some) / clear (None) the picture for one slot.
+    pub fn update_icon_project(&mut self, id: &str, name: Option<String>, slot: Option<(String, Option<String>)>) -> Result<()> {
+        let p = self.icon_project_mut(id)?;
+        if let Some(n) = name.filter(|n| !n.trim().is_empty()) {
+            p.name = n.trim().to_string();
+        }
+        if let Some((field, source)) = slot {
+            match source {
+                Some(s) => {
+                    p.images.insert(field, s);
+                }
+                None => {
+                    p.images.remove(&field);
+                }
+            }
+        }
+        self.save()
+    }
+
+    pub fn delete_icon_project(&mut self, id: &str) -> Result<()> {
+        self.state.icon_projects.retain(|p| p.id != id);
+        self.save()
+    }
+
+    pub fn store_icon_build(&mut self, project_id: &str, vpk_path: &Path, hero_name: &str) -> Result<String> {
+        let p = self.state.icon_projects.iter().find(|p| p.id == project_id).cloned().ok_or_else(|| Error::msg("That portrait project no longer exists"))?;
+        let notes = format!("Portraits for {hero_name}: {}", p.images.len());
+        let existing = p.mod_id.clone().filter(|m| self.state.mods.iter().any(|x| &x.id == m));
+        let mod_id = match existing {
+            Some(m) => {
+                self.replace_vpk(&m, vpk_path)?;
+                let entry = self.get_mut(&m)?;
+                entry.name = p.name.clone();
+                entry.notes = notes;
+                let v: u32 = entry.version.parse().unwrap_or(1);
+                entry.version = (v + 1).to_string();
+                m
+            }
+            None => self.import_vpk(vpk_path, ModMeta { name: Some(p.name.clone()), kind: Some(ModKind::Ui), hero: Some(hero_name.to_string()), notes: Some(notes), version: Some("1".into()) })?.id,
+        };
+        let pm = self.icon_project_mut(project_id)?;
         pm.mod_id = Some(mod_id.clone());
         pm.last_built = Some(now());
         self.save()?;

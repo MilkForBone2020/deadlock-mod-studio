@@ -23,6 +23,7 @@ const paths: Record<string, string> = {
   trash: "M5 7h14M10 7V4h4v3M7 7l1 13h8l1-13",
   layers: "M12 3l9 5-9 5-9-5zM3 13l9 5 9-5",
   wave: "M3 12h2M7 8v8M11 5v14M15 9v6M19 11v2M21 12h0",
+  portrait: "M5 3h14v18H5zM12 7a3 3 0 1 0 0 6 3 3 0 0 0 0-6zM7.5 19c.8-2.6 2.5-4 4.5-4s3.7 1.4 4.5 4",
   cube: "M12 3l8 4.5v9L12 21l-8-4.5v-9zM12 12l8-4.5M12 12v9M12 12L4 7.5",
 };
 

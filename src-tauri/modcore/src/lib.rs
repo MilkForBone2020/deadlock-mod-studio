@@ -10,6 +10,7 @@ pub mod csdk;
 pub mod dmx;
 pub mod gameinfo;
 pub mod glb;
+pub mod icons;
 pub mod kv3;
 pub mod kv3text;
 pub mod library;

@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { ApplyReport, BlenderInstall, Returned, BuildResult, ExtractResult, HeroInfo, Level, ModelBuildResult, ModelHero, ModelProject, ModelSummary, ModMeta, Pack, PreviewInfo, Overview, Profile, SafeModeEvent, SoundProject, SoundSearch, SoundUse } from "./types";
+import type { ApplyReport, BlenderInstall, Returned, BuildResult, ExtractResult, HeroInfo, Level, ModelBuildResult, ModelHero, ModelProject, ModelSummary, ModMeta, Pack, PreviewInfo, IconBuildResult, IconHero, IconProject, IconSlot, Overview, Profile, SafeModeEvent, SoundProject, SoundSearch, SoundUse } from "./types";
 import { mockApi } from "./mock";
 
 /** False when the UI is opened in a plain browser (`npm run dev`) for design work. */
@@ -26,6 +26,12 @@ const tauriApi = {
   deletePack: (id: string, withMods: boolean) => invoke<void>("delete_pack", { id, withMods }),
   exportPack: (id: string, path: string) => invoke<void>("export_pack", { id, path }),
   importPack: (path: string) => invoke<Pack>("import_pack", { path }),
+  iconHeroes: () => invoke<[IconHero[], IconSlot[]]>("icon_heroes"),
+  createIconProject: (name: string, hero: string) => invoke<IconProject>("create_icon_project", { name, hero }),
+  updateIconProject: (id: string, name?: string, field?: string, source?: string | null) => invoke<void>("update_icon_project", { id, name, field, source }),
+  deleteIconProject: (id: string) => invoke<void>("delete_icon_project", { id }),
+  iconPreview: (field: string, source: string) => invoke<ArrayBuffer>("icon_preview", { field, source }),
+  buildIconProject: (id: string) => invoke<IconBuildResult>("build_icon_project", { id }),
   markVerified: (id: string, verified: boolean) => invoke<void>("mark_verified", { id, verified }),
   saveProfile: (name: string) => invoke<Profile>("save_profile", { name }),
   deleteProfile: (id: string) => invoke<void>("delete_profile", { id }),

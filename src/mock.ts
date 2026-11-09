@@ -2,7 +2,7 @@
 // plain browser (`npm run dev`) so the design can be worked on without the
 // desktop app. Nothing here touches real files.
 
-import type { Action, ModEntry, ModelProject, ModelSummary, Overview, Pack, Profile, SoundProject } from "./types";
+import type { Action, IconProject, ModEntry, ModelProject, ModelSummary, Overview, Pack, Profile, SoundProject } from "./types";
 import type { Api } from "./api";
 
 const BUILD = "20614033";
@@ -133,6 +133,7 @@ const sevenSummary: ModelSummary = {
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 let packs: Pack[] = [];
+let iconProjects: IconProject[] = [];
 // Same rule as the app: a pack's mods sit together at its first mod's place.
 const groupPacks = () => {
   packs = packs.map((p) => ({ ...p, mods: mods.filter((m) => p.mods.includes(m.id)).map((m) => m.id) })).filter((p) => p.mods.length);
@@ -161,6 +162,7 @@ export const mockApi: Api = {
     soundProjects: structuredClone(projects),
     csdkFound: true,
     modelProjects: structuredClone(modelProjects),
+    iconProjects: structuredClone(iconProjects),
     s2vInstalled,
     s2vVersion: "fcf7323",
   }),
@@ -220,6 +222,59 @@ export const mockApi: Api = {
   },
   importPack: async () => {
     throw new Error("Importing packs needs the desktop app");
+  },
+  iconHeroes: async () => [
+    [
+      { code: "unicorn", name: "Celeste", images: [["m_strIconHeroCard", "file://{images}/heroes/unicorn_card.psd"], ["m_strIconHeroCardCritical", "file://{images}/heroes/unicorn_card_critical.psd"], ["m_strIconHeroCardGloat", "file://{images}/heroes/unicorn_card_gloat.psd"], ["m_strTopBarVertical", "file://{images}/heroes/unicorn_vertical.psd"], ["m_strIconImageSmall", "file://{images}/heroes/unicorn_sm.psd"], ["m_strMinimapImage", "file://{images}/heroes/unicorn_mm.psd"]] },
+      { code: "gigawatt", name: "Seven", images: [["m_strIconHeroCard", "file://{images}/heroes/gigawatt_card.psd"]] },
+    ],
+    [
+      { field: "m_strIconHeroCard", label: "Card", width: 280, height: 380 },
+      { field: "m_strIconHeroCardCritical", label: "Card: low health", width: 280, height: 380 },
+      { field: "m_strIconHeroCardGloat", label: "Card: gloating", width: 280, height: 380 },
+      { field: "m_strTopBarVertical", label: "Tall icon", width: 120, height: 200 },
+      { field: "m_strIconImageSmall", label: "Small icon", width: 128, height: 128 },
+      { field: "m_strMinimapImage", label: "Minimap icon", width: 50, height: 50 },
+    ],
+  ],
+  createIconProject: async (name, hero) => {
+    const p: IconProject = { id: String(Date.now()), name, hero, images: {}, modId: null, lastBuilt: null };
+    iconProjects = [...iconProjects, p];
+    return p;
+  },
+  updateIconProject: async (id, name, field, source) => {
+    iconProjects = iconProjects.map((p) => {
+      if (p.id !== id) return p;
+      const images = { ...p.images };
+      if (field) {
+        if (source) images[field] = source;
+        else delete images[field];
+      }
+      return { ...p, name: name ?? p.name, images };
+    });
+  },
+  deleteIconProject: async (id) => {
+    iconProjects = iconProjects.filter((p) => p.id !== id);
+  },
+  iconPreview: async (field) => {
+    const slot = { m_strIconHeroCard: [280, 380], m_strIconHeroCardCritical: [280, 380], m_strIconHeroCardGloat: [280, 380], m_strTopBarVertical: [120, 200], m_strIconImageSmall: [128, 128], m_strMinimapImage: [50, 50] }[field] ?? [100, 100];
+    const c = document.createElement("canvas");
+    c.width = slot[0];
+    c.height = slot[1];
+    const g = c.getContext("2d")!;
+    const grad = g.createLinearGradient(0, 0, 0, slot[1]);
+    grad.addColorStop(0, "#c9c9c9");
+    grad.addColorStop(1, "#3b3b3b");
+    g.fillStyle = grad;
+    g.fillRect(0, 0, slot[0], slot[1]);
+    const blob: Blob = await new Promise((r) => c.toBlob((b) => r(b!), "image/png"));
+    return blob.arrayBuffer();
+  },
+  buildIconProject: async (id) => {
+    await wait(700);
+    const p = iconProjects.find((x) => x.id === id)!;
+    iconProjects = iconProjects.map((x) => (x.id === id ? { ...x, modId: "a1", lastBuilt: now() } : x));
+    return { modId: "a1", modName: p.name, report: { files: Object.keys(p.images).map((f) => `panorama/images/heroes/${p.hero}_${f}_psd.vtex_c`), vpk: "x.vpk", vpkSize: 1_200_000, log: "OK" } };
   },
   markVerified: async (id, v) => {
     mods = mods.map((m) => (m.id === id ? { ...m, verifiedBuild: v ? BUILD : null } : m));
