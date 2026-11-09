@@ -465,6 +465,13 @@ def fit_to_hero(meshes, hero, hero_meshes, scene=None, mode="SHAPE"):
 
     # Weights onto the hero's bones.
     target = {n: seg.weight for n, seg in mapped.items()}
+    if mode == "SHAPE":
+        # The model's fingers aren't on the hero's finger joints, so the
+        # hero's finger animation would twist them: they follow the hand.
+        for n in mapped:
+            key, side = role_of.get(n, ("", ""))
+            if key[:-1] in ("thumb", "index", "middle", "ring", "pinky") and f"hand_{side}" in hero.data.bones:
+                target[n] = f"hand_{side}"
     for n, lead in followers.items():
         target[n] = target.get(lead) if lead else None
     for o in meshes:
