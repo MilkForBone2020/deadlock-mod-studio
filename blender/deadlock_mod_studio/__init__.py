@@ -22,7 +22,7 @@ from bpy.props import EnumProperty, StringProperty
 from . import fit
 from mathutils import Vector
 
-ADDON_VERSION = "0.1.9"
+ADDON_VERSION = "0.1.10"
 MAX_WEIGHTS = 4
 # Fairness rule: a custom model stays close to the original's size. Smaller
 # is the unfair direction; accessories that stick out make you easier to see.
@@ -795,6 +795,7 @@ class DMS_OT_fit_to_hero(bpy.types.Operator):
         name="Fit",
         items=[
             ("SHAPE", "Keep my model's shape", "Scale to the hero's height; torso and head stay as modelled; arms and legs only turn to the hero's pose"),
+            ("LIMBS", "Keep shape, fit limbs", "Torso, head, hands and feet as modelled; arms and legs stretch or shrink so elbows, wrists, knees and ankles sit on the hero's joints (bends best in animations)"),
             ("SKELETON", "Match the hero's skeleton", "Move every joint onto the hero's: limbs take the hero's lengths (best for realistic proportions)"),
         ],
         default="SHAPE",

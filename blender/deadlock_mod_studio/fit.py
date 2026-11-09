@@ -276,7 +276,10 @@ def rigid_delta(pose, rest):
 
 
 # Body parts kept exactly as modelled in "keep shape" mode (only scaled).
-TORSO = {"hips", "spine1", "spine2", "spine3", "neck", "neck2", "head", "shoulder"}
+TORSO = {"hips", "spine1", "spine2", "spine3", "neck", "neck2", "head"}
+LIMB_ROOTS = {"upperarm", "thigh"}
+LIMBS = {"upperarm", "upperarm2", "forearm", "forearm2", "thigh", "thigh2", "shin", "shin2"}
+LIMB_ENDS = {"hand", "foot"}
 
 
 def fit_to_hero(meshes, hero, hero_meshes, scene=None, mode="SHAPE"):
@@ -339,6 +342,22 @@ def fit_to_hero(meshes, hero, hero_meshes, scene=None, mode="SHAPE"):
         d["head"], d["tail"] = place @ d["head"], place @ d["tail"]
         d["z"] = (turn.to_3x3() @ d["z"]).normalized()
 
+    # Centre it on the hero front to back and side to side: line up the
+    # hips, thighs and shoulders (a model built off-centre would otherwise
+    # bend around joints that aren't inside it).
+    pairs = []
+    for k in (("hips", ""), ("thigh", "L"), ("thigh", "R"), ("upperarm", "L"), ("upperarm", "R"), ("shoulder", "L"), ("shoulder", "R")):
+        if k in roles and k in segs:
+            pairs.append(segs[k].head - src[roles[k]]["head"])
+    if pairs:
+        off = sum(pairs, Vector()) / len(pairs)
+        shift = Matrix.Translation((off.x, off.y, 0.0))
+        report["centred"] = [round(off.x, 4), round(off.y, 4)]
+        for o in meshes:
+            o.data.transform(shift)
+        for d in src.values():
+            d["head"], d["tail"] = shift @ d["head"], shift @ d["tail"]
+
     # A flat copy of the deform bones to fit with.
     bones = sorted(used_groups)
     fit_data = bpy.data.armatures.new("dms_fit")
@@ -395,9 +414,11 @@ def fit_to_hero(meshes, hero, hero_meshes, scene=None, mode="SHAPE"):
     role_of = {roles[k]: k for k in roles}
     poses = {}
     if mode == "SHAPE":
-        poses = shape_poses(fit_data, mapped, role_of, src)
+        poses = shape_poses(fit_data, mapped, role_of, src, fit_limbs=False)
+    elif mode == "LIMBS":
+        poses = shape_poses(fit_data, mapped, role_of, src, fit_limbs=True)
     # Pose: matched bones onto the hero's joints.
-    for n, seg in (mapped.items() if mode != "SHAPE" else []):
+    for n, seg in (mapped.items() if mode == "SKELETON" else []):
         rest = fit_data.bones[n].matrix_local.copy()
         rest_dir = (rest.to_3x3() @ Vector((0, 1, 0))).normalized()
         length = fit_data.bones[n].length
@@ -459,10 +480,14 @@ def fit_to_hero(meshes, hero, hero_meshes, scene=None, mode="SHAPE"):
     return report
 
 
-def shape_poses(fit_data, mapped, role_of, src):
-    """Keep-shape poses: torso bones stay put; every limb bone turns about
-    its own (carried) head to point the way the hero's bone does, without
-    stretching. Parents first, so each bone rides on its parent's turn."""
+def shape_poses(fit_data, mapped, role_of, src, fit_limbs=False):
+    """Keep-shape poses: torso bones stay put; the shoulder piece reaches to
+    the hero's shoulder joint, so each arm (and leg) starts on the hero's
+    joint; every limb bone turns to point the way the hero's bone does,
+    without stretching. `fit_limbs`: arm and leg segments also stretch so
+    elbows, wrists, knees and ankles sit on the hero's joints (hands and
+    feet keep their shape). Parents first, so each bone rides on its
+    parent."""
     def mapped_parent(n):
         b = src[n]["bone"].parent
         while b is not None:
@@ -495,10 +520,22 @@ def shape_poses(fit_data, mapped, role_of, src):
         if key in TORSO or seg.tail is None or (seg.tail - seg.head).length < 1e-6:
             poses[n] = carried
             return carried
+        head = carried.translation
+        stretch = 1.0
+        if key == "shoulder":
+            # Reach from where the shoulder piece is to the hero's shoulder joint.
+            target = seg.tail - head
+            stretch = target.length / max(fit_data.bones[n].length, 1e-9)
+            new_dir = target.normalized()
+        else:
+            if key in LIMB_ROOTS or (fit_limbs and (key in LIMBS or key in LIMB_ENDS)):
+                head = seg.head
+            new_dir = (seg.tail - seg.head).normalized()
+            if fit_limbs and key in LIMBS:
+                stretch = (seg.tail - seg.head).length / max(fit_data.bones[n].length, 1e-9)
         cur_dir = (carried.to_3x3() @ Vector((0, 1, 0))).normalized()
-        new_dir = (seg.tail - seg.head).normalized()
         rot = cur_dir.rotation_difference(new_dir).to_matrix() @ carried.to_3x3()
-        poses[n] = Matrix.Translation(carried.translation) @ rot.to_4x4()
+        poses[n] = Matrix.Translation(head) @ rot.to_4x4() @ Matrix.Diagonal((1.0, stretch, 1.0, 1.0))
         return poses[n]
 
     for n in mapped:
