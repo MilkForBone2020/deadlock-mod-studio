@@ -210,6 +210,9 @@ pub struct ModelProject {
     pub mod_id: Option<String>,
     #[serde(default)]
     pub last_built: Option<String>,
+    /// Physics tuning by "<chain>/<preset>".
+    #[serde(default)]
+    pub physics: BTreeMap<String, crate::model::PhysicsTuning>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -1011,11 +1014,25 @@ impl Library {
             extracted_tool: None,
             mod_id: None,
             last_built: None,
+            physics: BTreeMap::new(),
         };
         std::fs::create_dir_all(self.model_dir(&p.id)).at(&self.root)?;
         self.state.model_projects.push(p.clone());
         self.save()?;
         Ok(p)
+    }
+
+    pub fn set_model_physics(&mut self, id: &str, key: &str, tuning: Option<crate::model::PhysicsTuning>) -> Result<()> {
+        let p = self.state.model_projects.iter_mut().find(|p| p.id == id).ok_or_else(|| Error::msg("That model project no longer exists"))?;
+        match tuning {
+            Some(t) => {
+                p.physics.insert(key.to_string(), t);
+            }
+            None => {
+                p.physics.remove(key);
+            }
+        }
+        self.save()
     }
 
     pub fn rename_model_project(&mut self, id: &str, name: &str) -> Result<()> {

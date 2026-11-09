@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { ApplyReport, BlenderInstall, Returned, BuildResult, ExtractResult, HeroInfo, Level, ModelBuildResult, ModelHero, ModelProject, ModelSummary, ModMeta, Pack, PreviewInfo, IconBuildResult, IconHero, IconProject, IconSlot, Overview, Profile, SafeModeEvent, SoundProject, SoundSearch, SoundUse } from "./types";
+import type { ApplyReport, BlenderInstall, Returned, BuildResult, ExtractResult, HeroInfo, Level, ModelBuildResult, ModelHero, ModelProject, ModelSummary, ModMeta, Pack, PhysicsTuning, PreviewInfo, IconBuildResult, IconHero, IconProject, IconSlot, Overview, Profile, SafeModeEvent, SoundProject, SoundSearch, SoundUse } from "./types";
 import { mockApi } from "./mock";
 
 /** False when the UI is opened in a plain browser (`npm run dev`) for design work. */
@@ -70,6 +70,8 @@ const tauriApi = {
   setBlenderExe: (path: string) => invoke<void>("set_blender_exe", { path }),
   editInBlender: (id: string, fresh = false) => invoke<string>("edit_in_blender", { id, fresh }),
   modelReturns: (id: string) => invoke<Returned[]>("model_returns", { id }),
+  setModelPhysics: (id: string, key: string, tuning: PhysicsTuning | null) => invoke<void>("set_model_physics", { id, key, tuning }),
+  physicsParams: (preset: string, index: number, tuning: PhysicsTuning) => invoke<number[]>("physics_params", { preset, index, tuning }),
   modelPreviewInfo: (id: string, original = false) => invoke<PreviewInfo>("model_preview_info", { id, original }),
   modelPreviewFile: (id: string, path: string) => invoke<ArrayBuffer>("model_preview_file", { id, path }),
 };

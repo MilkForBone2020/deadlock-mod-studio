@@ -282,7 +282,7 @@ LIMBS = {"upperarm", "upperarm2", "forearm", "forearm2", "thigh", "thigh2", "shi
 LIMB_ENDS = {"hand", "foot"}
 
 
-def fit_to_hero(meshes, hero, hero_meshes, scene=None, mode="SHAPE"):
+def fit_to_hero(meshes, hero, hero_meshes, scene=None, mode="SHAPE", physics=True):
     """Fit `meshes` (rigged to their own armatures) onto `hero`. Returns a
     report dict. `hero_meshes`: the hero's original meshes, for its height.
 
@@ -359,6 +359,12 @@ def fit_to_hero(meshes, hero, hero_meshes, scene=None, mode="SHAPE"):
             d["head"], d["tail"] = shift @ d["head"], shift @ d["tail"]
 
     # A flat copy of the deform bones to fit with.
+    # Unweighted bones between weighted ones stay, so chains aren't broken.
+    for n in list(used_groups):
+        b = src[n]["bone"].parent
+        while b is not None and b.name in src:
+            used_groups.add(b.name)
+            b = b.parent
     bones = sorted(used_groups)
     fit_data = bpy.data.armatures.new("dms_fit")
     fit = bpy.data.objects.new("dms_fit", fit_data)
@@ -397,6 +403,7 @@ def fit_to_hero(meshes, hero, hero_meshes, scene=None, mode="SHAPE"):
         top = d["bone"]
         while top.parent is not None and top.parent.name in src:
             top = top.parent
+        detached[name] = top.name
         d = src[top.name]
         best, dist = None, 1e9
         for m in mapped:
@@ -408,6 +415,7 @@ def fit_to_hero(meshes, hero, hero_meshes, scene=None, mode="SHAPE"):
                 best, dist = m, dd
         return best
 
+    detached = {}  # bone -> top bone of its own little rig (a bow, cables)
     followers = {n: leader_of(n) for n in bones if n not in mapped}
     report["followers"] = followers
 
@@ -472,6 +480,13 @@ def fit_to_hero(meshes, hero, hero_meshes, scene=None, mode="SHAPE"):
                 target[n] = f"hand_{side}"
     for n, lead in followers.items():
         target[n] = target.get(lead) if lead else None
+    if physics and detached:
+        # Bones on their own rig (a bow and its cables) become new bones on
+        # the hero, hanging from the bone they follow, ready for physics.
+        new_names = add_physics_bones(hero, fit, fit_data, poses, src, detached, followers, target)
+        report["physics"] = physics_chains(src, detached, new_names, target, followers)
+        for n, nn in new_names.items():
+            target[n] = nn
     for o in meshes:
         remap_weights(o, target)
         o.parent = hero
@@ -566,6 +581,82 @@ def shape_poses(fit_data, mapped, role_of, src, fit_limbs=False):
     for n in mapped:
         pose(n)
     return poses
+
+
+def safe_bone_name(name):
+    return "dms_" + re.sub(r"[^A-Za-z0-9]+", "_", name).strip("_").lower()
+
+
+def add_physics_bones(hero, fit, fit_data, poses, src, detached, followers, target):
+    """Add `detached` bones to the hero's rig where the fit put them,
+    parented like in their own rig; each little rig's top bone hangs from
+    the hero bone it followed. Returns {source bone: new bone name}."""
+    names = {n: safe_bone_name(n) for n in detached}
+    view = bpy.context.view_layer
+    prev = view.objects.active
+    for o in view.objects:
+        o.select_set(False)
+    view.objects.active = hero
+    bpy.ops.object.mode_set(mode="EDIT")
+    eb = hero.data.edit_bones
+    inv = hero.matrix_world.inverted()
+    for n, nn in names.items():
+        if nn in eb:
+            eb.remove(eb[nn])
+        m = inv @ fit.matrix_world @ poses[n]
+        b = eb.new(nn)
+        length = max(fit_data.bones[n].length, 1e-3)
+        b.head = m.translation
+        b.tail = m @ Vector((0, length, 0))
+        b.align_roll(m.to_3x3() @ Vector((0, 0, 1)))
+        b.use_deform = True
+    for n, nn in names.items():
+        parent = src[n]["bone"].parent
+        if parent is not None and parent.name in names:
+            eb[nn].parent = eb[names[parent.name]]
+        else:
+            hero_parent = target.get(followers.get(n)) or target.get(n)
+            if hero_parent and hero_parent in eb:
+                eb[nn].parent = eb[hero_parent]
+        eb[nn].use_connect = False
+    bpy.ops.object.mode_set(mode="OBJECT")
+    view.objects.active = prev
+    return names
+
+
+def physics_chains(src, detached, names, target, followers):
+    """One cloth chain per little rig: its top bone pinned to the hero bone
+    it hangs from; short branches (a bow loop) wobble but hold their shape,
+    long ones (cables) dangle. The app turns presets into Valve's cloth
+    settings."""
+    chains = []
+    for top in sorted(set(detached.values())):
+        if top not in names:
+            continue
+        kids = {}
+        for n in names:
+            p = src[n]["bone"].parent
+            if p is not None and p.name in names:
+                kids.setdefault(p.name, []).append(n)
+
+        def depth_below(n):
+            return 1 + max((depth_below(c) for c in kids.get(n, [])), default=0)
+
+        joints = [{"bone": names[top], "parent": "", "simulate": False, "preset": "pinned", "index": 0}]
+
+        def walk(n, branch_len, d):
+            dangle = branch_len >= 3
+            if dangle and d == 1:
+                joints.append({"bone": names[n], "parent": names[src[n]["bone"].parent.name], "simulate": False, "preset": "pinned", "index": 0})
+            else:
+                joints.append({"bone": names[n], "parent": names[src[n]["bone"].parent.name], "simulate": True, "preset": "dangle" if dangle else "wobbly", "index": d - (2 if dangle else 1)})
+            for c in sorted(kids.get(n, [])):
+                walk(c, branch_len, d + 1)
+
+        for c in sorted(kids.get(top, [])):
+            walk(c, depth_below(c), 1)
+        chains.append({"name": names[top], "parent": target.get(followers.get(top)) or "", "joints": joints})
+    return chains
 
 
 def remap_weights(obj, target, limit=4):

@@ -1069,6 +1069,18 @@ fn model_preview_file(app: State<App>, id: String, path: String) -> CmdResult<ta
     std::fs::read(&p).map(tauri::ipc::Response::new).map_err(|e| e.to_string())
 }
 
+/// Tune one group of physics bones (`key` = "<chain>/<preset>"); None resets it.
+#[tauri::command]
+fn set_model_physics(app: State<App>, id: String, key: String, tuning: Option<model::PhysicsTuning>) -> CmdResult<()> {
+    app.lib.lock().unwrap().set_model_physics(&id, &key, tuning).map_err(err)
+}
+
+/// The cloth settings a preset gives (for the app to show).
+#[tauri::command]
+fn physics_params(preset: String, index: u32, tuning: model::PhysicsTuning) -> [f32; 7] {
+    model::joint_params(&preset, index, &tuning)
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct ModelBuildResult {
@@ -1097,6 +1109,7 @@ async fn build_model_project(app_handle: tauri::AppHandle, app: State<'_, App>, 
     let slug = format!("{}_{}", project.name, &project.id[..4]);
     let h = app_handle.clone();
     let model_path = project.model.clone();
+    let physics = project.physics.clone();
     let returned = if with_model {
         let latest = blender::returned(&dir.join("return")).into_iter().next().ok_or("Nothing has been sent back from Blender yet")?;
         Some(PathBuf::from(latest.folder))
@@ -1104,7 +1117,7 @@ async fn build_model_project(app_handle: tauri::AppHandle, app: State<'_, App>, 
         None
     };
     let report = tauri::async_runtime::spawn_blocking(move || {
-        model::build(&csdk_dir, &game_dir, &model_path, &dir, &slug, returned.as_deref(), &out, &csdk::run_compiler, &|m| {
+        model::build(&csdk_dir, &game_dir, &model_path, &dir, &slug, returned.as_deref(), &physics, &out, &csdk::run_compiler, &|m| {
             let _ = h.emit("model-progress", m.to_string());
         })
     })
@@ -1216,6 +1229,8 @@ pub fn run() {
             edit_in_blender,
             model_returns,
             model_preview_info,
+            set_model_physics,
+            physics_params,
             model_preview_file,
         ])
         .run(tauri::generate_context!())

@@ -10,6 +10,7 @@ use crate::dmx::{self, Attr};
 use crate::glb::SkinnedMesh;
 use crate::{Error, Result};
 use std::collections::{HashMap, HashSet};
+use crate::glb::Mat4;
 
 pub const METRES_PER_UNIT: f64 = 0.0254;
 
@@ -19,6 +20,169 @@ pub fn to_game(v: [f64; 3]) -> [f64; 3] {
 
 fn to_game_dir(v: [f64; 3]) -> [f64; 3] {
     [v[2], v[0], v[1]]
+}
+
+type M3 = [[f64; 3]; 3];
+
+fn m3_mul(a: &M3, b: &M3) -> M3 {
+    let mut r = [[0.0; 3]; 3];
+    for i in 0..3 {
+        for j in 0..3 {
+            r[i][j] = (0..3).map(|k| a[i][k] * b[k][j]).sum();
+        }
+    }
+    r
+}
+
+fn m3_t(a: &M3) -> M3 {
+    let mut r = [[0.0; 3]; 3];
+    for i in 0..3 {
+        for j in 0..3 {
+            r[i][j] = a[j][i];
+        }
+    }
+    r
+}
+
+fn m3_v(a: &M3, v: [f64; 3]) -> [f64; 3] {
+    [0, 1, 2].map(|i| a[i][0] * v[0] + a[i][1] * v[1] + a[i][2] * v[2])
+}
+
+/// Quaternion (x, y, z, w) to rotation matrix.
+fn quat_m3(q: [f64; 4]) -> M3 {
+    let [x, y, z, w] = q;
+    [
+        [1.0 - 2.0 * (y * y + z * z), 2.0 * (x * y - z * w), 2.0 * (x * z + y * w)],
+        [2.0 * (x * y + z * w), 1.0 - 2.0 * (x * x + z * z), 2.0 * (y * z - x * w)],
+        [2.0 * (x * z - y * w), 2.0 * (y * z + x * w), 1.0 - 2.0 * (x * x + y * y)],
+    ]
+}
+
+fn m3_quat(m: &M3) -> [f64; 4] {
+    let tr = m[0][0] + m[1][1] + m[2][2];
+    let q = if tr > 0.0 {
+        let s = (tr + 1.0).sqrt() * 2.0;
+        [(m[2][1] - m[1][2]) / s, (m[0][2] - m[2][0]) / s, (m[1][0] - m[0][1]) / s, 0.25 * s]
+    } else if m[0][0] > m[1][1] && m[0][0] > m[2][2] {
+        let s = (1.0 + m[0][0] - m[1][1] - m[2][2]).sqrt() * 2.0;
+        [0.25 * s, (m[0][1] + m[1][0]) / s, (m[0][2] + m[2][0]) / s, (m[2][1] - m[1][2]) / s]
+    } else if m[1][1] > m[2][2] {
+        let s = (1.0 + m[1][1] - m[0][0] - m[2][2]).sqrt() * 2.0;
+        [(m[0][1] + m[1][0]) / s, 0.25 * s, (m[1][2] + m[2][1]) / s, (m[0][2] - m[2][0]) / s]
+    } else {
+        let s = (1.0 + m[2][2] - m[0][0] - m[1][1]).sqrt() * 2.0;
+        [(m[0][2] + m[2][0]) / s, (m[1][2] + m[2][1]) / s, 0.25 * s, (m[1][0] - m[0][1]) / s]
+    };
+    let n = q.iter().map(|x| x * x).sum::<f64>().sqrt().max(1e-12);
+    q.map(|x| x / n)
+}
+
+fn raw_floats(ty: u8, v: &[f64]) -> Attr {
+    Attr::Raw { ty, bytes: v.iter().flat_map(|x| (*x as f32).to_le_bytes()).collect() }
+}
+
+fn read_floats(a: Option<&Attr>, n: usize) -> Vec<f64> {
+    match a {
+        Some(Attr::Raw { bytes, .. }) if bytes.len() >= n * 4 => bytes.chunks_exact(4).take(n).map(|c| f32::from_le_bytes(c.try_into().unwrap()) as f64).collect(),
+        _ => vec![0.0; n],
+    }
+}
+
+/// Add joints (and any missing parents among them) to a DMX skeleton,
+/// placed where they are in the glTF. Joint transforms are local to the
+/// parent; positions in game units.
+fn add_joints(d: &mut dmx::Dmx, model: usize, wanted: &[String], glb: &HashMap<String, (Option<String>, Mat4)>) -> Result<()> {
+    // World transform of every existing joint (rotation, position).
+    let joints = d.elements[model].elements("jointList");
+    let mut parent_of: HashMap<usize, usize> = HashMap::new();
+    for &j in &joints {
+        for c in d.elements[j].elements("children") {
+            parent_of.insert(c, j);
+        }
+    }
+    let mut world: HashMap<String, (M3, [f64; 3])> = HashMap::new();
+    fn local(d: &dmx::Dmx, j: usize) -> (M3, [f64; 3]) {
+        let t = d.elements[j].element("transform");
+        let (p, q) = match t {
+            Some(t) => (read_floats(d.elements[t].get("position"), 3), read_floats(d.elements[t].get("orientation"), 4)),
+            None => (vec![0.0; 3], vec![0.0, 0.0, 0.0, 1.0]),
+        };
+        (quat_m3([q[0], q[1], q[2], q[3]]), [p[0], p[1], p[2]])
+    }
+    for &j in &joints {
+        let mut chain = vec![j];
+        let mut c = j;
+        while let Some(&p) = parent_of.get(&c) {
+            chain.push(p);
+            c = p;
+        }
+        let mut r: M3 = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+        let mut t = [0.0; 3];
+        for &k in chain.iter().rev() {
+            let (lr, lt) = local(d, k);
+            let moved = m3_v(&r, lt);
+            t = [t[0] + moved[0], t[1] + moved[1], t[2] + moved[2]];
+            r = m3_mul(&r, &lr);
+        }
+        world.insert(d.elements[j].name.clone(), (r, t));
+    }
+    let by_name: HashMap<String, usize> = joints.iter().map(|&j| (d.elements[j].name.clone(), j)).collect();
+
+    // Bones to add, parents first.
+    let mut order: Vec<String> = vec![];
+    fn visit(n: &str, glb: &HashMap<String, (Option<String>, Mat4)>, have: &HashMap<String, usize>, order: &mut Vec<String>, depth: usize) {
+        if depth > 256 || have.contains_key(n) || order.iter().any(|o| o == n) {
+            return;
+        }
+        if let Some((Some(p), _)) = glb.get(n) {
+            visit(p, glb, have, order, depth + 1);
+        }
+        order.push(n.to_string());
+    }
+    for w in wanted {
+        visit(w, glb, &by_name, &mut order, 0);
+    }
+    let p: M3 = [[0.0, 0.0, 1.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]]; // glTF -> game axes
+    let mut index = by_name.clone();
+    let mut list = joints.iter().map(|&j| j as i32).collect::<Vec<i32>>();
+    for n in &order {
+        let (parent, m) = &glb[n];
+        let parent = parent.clone().filter(|p| index.contains_key(p)).ok_or_else(|| Error::msg(format!("New bone {n} doesn't hang from one of the hero's bones")))?;
+        // World transform in game space.
+        let mut rg: M3 = [[0.0; 3]; 3];
+        for i in 0..3 {
+            let len = (0..3).map(|r| m[r][i] * m[r][i]).sum::<f64>().sqrt().max(1e-12);
+            for r in 0..3 {
+                rg[r][i] = m[r][i] / len;
+            }
+        }
+        let rw = m3_mul(&m3_mul(&p, &rg), &m3_t(&p));
+        let tw = to_game([m[0][3], m[1][3], m[2][3]]);
+        let (pr, pt) = world[&parent];
+        let lr = m3_mul(&m3_t(&pr), &rw);
+        let lt = m3_v(&m3_t(&pr), [tw[0] - pt[0], tw[1] - pt[1], tw[2] - pt[2]]);
+        world.insert(n.clone(), (rw, tw));
+        let q = m3_quat(&lr);
+        let tr = d.add("DmeTransform", n, vec![("position".into(), raw_floats(dmx::T_VEC3, &lt)), ("orientation".into(), raw_floats(13, &q))]);
+        let j = d.add(
+            "DmeJoint",
+            n,
+            vec![
+                ("transform".into(), Attr::Element(tr as i32)),
+                ("shape".into(), Attr::Element(-1)),
+                ("visible".into(), Attr::Raw { ty: dmx::T_BOOL, bytes: vec![1] }),
+                ("children".into(), dmx::i32_array(dmx::T_ELEMENT, &[])),
+            ],
+        );
+        let pj = index[&parent];
+        let mut kids: Vec<i32> = d.elements[pj].elements("children").into_iter().map(|k| k as i32).collect();
+        kids.push(j as i32);
+        d.elements[pj].set("children", dmx::i32_array(dmx::T_ELEMENT, &kids));
+        list.push(j as i32);
+        index.insert(n.clone(), j);
+    }
+    d.elements[model].set("jointList", dmx::i32_array(dmx::T_ELEMENT, &list));
+    Ok(())
 }
 
 /// `gigawatt_prisoner.001` -> `gigawatt_prisoner`
@@ -164,8 +328,30 @@ pub fn tangents(pos: &[[f64; 3]], nrm: &[[f64; 3]], uv: &[[f32; 2]], tris: &[u32
 /// `materials` maps a material name (as in Blender, or a hero material's
 /// base name) to its `.vmat` path.
 pub fn swap(original: &[u8], meshes: &[&SkinnedMesh], materials: &HashMap<String, String>, tangent_sign: f64) -> Result<Swap> {
+    swap_with_bones(original, meshes, materials, tangent_sign, &HashMap::new())
+}
+
+/// `swap`, adding bones the meshes use that the part's skeleton doesn't
+/// have yet (bones added in Blender for physics). `glb_joints`: every joint
+/// of the glTF (name -> parent, world matrix at rest).
+pub fn swap_with_bones(original: &[u8], meshes: &[&SkinnedMesh], materials: &HashMap<String, String>, tangent_sign: f64, glb_joints: &HashMap<String, (Option<String>, Mat4)>) -> Result<Swap> {
     let mut d = dmx::parse(original)?;
     let model = d.elements[0].element("model").ok_or_else(|| Error::msg("DMX has no model"))?;
+    let existing: HashSet<String> = d.elements[model].elements("jointList").iter().map(|&i| d.elements[i].name.clone()).collect();
+    let mut wanted: Vec<String> = vec![];
+    for m in meshes {
+        for v in &m.vertices {
+            for (j, _) in &v.weights {
+                let b = &m.bones[*j];
+                if !existing.contains(b) && glb_joints.contains_key(b) && !wanted.contains(b) {
+                    wanted.push(b.clone());
+                }
+            }
+        }
+    }
+    if !wanted.is_empty() {
+        add_joints(&mut d, model, &wanted, glb_joints)?;
+    }
     let joint_names: Vec<String> = d.elements[model].elements("jointList").iter().map(|&i| d.elements[i].name.clone()).collect();
     let joint_index: HashMap<&str, usize> = joint_names.iter().enumerate().map(|(i, n)| (n.as_str(), i)).collect();
     let mesh_el = *d.find_type("DmeMesh").first().ok_or_else(|| Error::msg("DMX has no mesh"))?;

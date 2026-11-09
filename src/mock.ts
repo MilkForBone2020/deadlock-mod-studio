@@ -220,6 +220,25 @@ export const mockApi: Api = {
   exportPack: async () => {
     await wait(400);
   },
+  setModelPhysics: async (id, key, tuning) => {
+    modelProjects = modelProjects.map((p) => {
+      if (p.id !== id) return p;
+      const physics = { ...(p.physics ?? {}) };
+      if (tuning) physics[key] = tuning;
+      else delete physics[key];
+      return { ...p, physics };
+    });
+  },
+  physicsParams: async (preset, index, t) => {
+    const base: Record<string, number[]> = {
+      wobbly: [Math.max(0.6, 0.8 - 0.1 * index), 0.01, 0.3, 2 + index, 0, 0, 1],
+      dangle: [[0.4, 0.3, 0.2, 0.1][Math.min(index, 3)], 0.003, 1, 4 + 2 * index, 1, 0.1, 0.05],
+      stiff: [0.9, 0.02, 0.2, 1, 0, 0, 1],
+      floppy: [0.05, 0.001, 1, 12 + 2 * index, 1, 0.1, 0],
+    };
+    const b = base[preset] ?? [0, 0, 0, 0, 0, 0, 0];
+    return [Math.min(1, b[0] * t.stiffness), b[1] * t.damping, b[2] * t.gravity, b[3] * t.wander, b[4], b[5], b[6]];
+  },
   importPack: async () => {
     throw new Error("Importing packs needs the desktop app");
   },
@@ -430,7 +449,7 @@ export const mockApi: Api = {
   },
   modelReturns: async () =>
     sentBack
-      ? [{ folder: "x", sent: now(), blender: "5.0.0", addon: "0.1.0", glb: "model.glb", objects: [{ object: "outer_costume", part: "outer_costume", triangles: 107910 }, { object: "gun", part: "gun", triangles: 32803 }], materials: ["gigawatt_prisoner"], materialFiles: [{ name: "gigawatt_prisoner", color: "textures/gigawatt_prisoner_color.png" }] }]
+      ? [{ folder: "x", sent: now(), blender: "5.0.0", addon: "0.1.0", glb: "model.glb", objects: [{ object: "outer_costume", part: "outer_costume", triangles: 107910 }, { object: "gun", part: "gun", triangles: 32803 }], materials: ["gigawatt_prisoner"], materialFiles: [{ name: "gigawatt_prisoner", color: "textures/gigawatt_prisoner_color.png" }], physics: [{ name: "dms_root", parent: "head", joints: [{ bone: "dms_root", parent: "", simulate: false, preset: "pinned", index: 0 }, ...[1, 2, 3].flatMap((n) => ["l", "r"].map((s) => ({ bone: `dms_bow_${n}_${s}`, parent: "dms_root", simulate: true, preset: "wobbly", index: 0 }))), ...["l", "r"].flatMap((s) => [{ bone: `dms_cable_${s}_001`, parent: "dms_root", simulate: false, preset: "pinned", index: 0 }, ...[2, 3, 4, 5].map((n) => ({ bone: `dms_cable_${s}_00${n}`, parent: `dms_cable_${s}_00${n - 1}`, simulate: true, preset: "dangle", index: n - 2 }))])] }] }]
       : [],
   // Dev only: put model.glb, original.glb and textures in public/dev-preview/
   // (not committed) to try the preview in a browser.

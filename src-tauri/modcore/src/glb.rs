@@ -1,6 +1,7 @@
 //! Just enough glTF 2.0 (binary `.glb`) reading for the models Blender sends
 //! back: nodes, skinned meshes, materials and their accessors.
 
+use std::collections::{HashMap, HashSet};
 use crate::{Error, Result};
 use serde_json::Value;
 
@@ -197,6 +198,39 @@ impl Glb {
             })
             .collect()
     }
+}
+
+/// Every skin joint: name -> (parent joint name, world matrix at rest).
+pub fn joints(g: &Glb) -> HashMap<String, (Option<String>, Mat4)> {
+    let world = g.world_matrices();
+    let nodes = g.arr("nodes");
+    let mut parent = vec![usize::MAX; nodes.len()];
+    for (i, n) in nodes.iter().enumerate() {
+        for c in n["children"].as_array().map(|a| a.as_slice()).unwrap_or(&[]) {
+            if let Some(c) = c.as_u64() {
+                if (c as usize) < parent.len() {
+                    parent[c as usize] = i;
+                }
+            }
+        }
+    }
+    let mut joint_nodes = HashSet::new();
+    for skin in g.arr("skins") {
+        for j in skin["joints"].as_array().map(|a| a.as_slice()).unwrap_or(&[]) {
+            if let Some(j) = j.as_u64() {
+                joint_nodes.insert(j as usize);
+            }
+        }
+    }
+    joint_nodes
+        .iter()
+        .filter(|&&j| j < nodes.len())
+        .map(|&j| {
+            let p = parent[j];
+            let pname = (p != usize::MAX && joint_nodes.contains(&p)).then(|| g.node_name(p));
+            (g.node_name(j), (pname, world[j]))
+        })
+        .collect()
 }
 
 /// One vertex of a skinned mesh, in the bind pose, in glTF space.

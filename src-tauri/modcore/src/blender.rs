@@ -178,6 +178,8 @@ pub struct Returned {
     /// Every material the model uses, with repainted textures and values.
     #[serde(default)]
     pub material_files: Vec<MaterialFile>,
+    #[serde(default)]
+    pub physics: Vec<PhysicsChain>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
@@ -199,6 +201,31 @@ pub struct MaterialFile {
     pub roughness: Option<f32>,
     #[serde(default)]
     pub metallic: Option<f32>,
+}
+
+/// A cloth chain made in Blender (bones the add-on added to the rig).
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct PhysicsChain {
+    pub name: String,
+    /// The hero bone it hangs from.
+    #[serde(default)]
+    pub parent: String,
+    pub joints: Vec<PhysicsJoint>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct PhysicsJoint {
+    pub bone: String,
+    #[serde(default)]
+    pub parent: String,
+    pub simulate: bool,
+    /// "pinned", "wobbly" or "dangle".
+    pub preset: String,
+    /// Position along its branch (0 = nearest the pinned bone).
+    #[serde(default)]
+    pub index: u32,
 }
 
 pub fn returned(return_dir: &Path) -> Vec<Returned> {
@@ -226,12 +253,12 @@ mod tests {
 
     #[test]
     fn addon_packs_with_its_version() {
-        assert_eq!(addon_version(), "0.1.12");
+        assert_eq!(addon_version(), "0.1.13");
         let z = addon_zip().unwrap();
         let mut a = zip::ZipArchive::new(std::io::Cursor::new(z)).unwrap();
         let names: Vec<String> = (0..a.len()).map(|i| a.by_index(i).unwrap().name().to_string()).collect();
         assert_eq!(names, vec!["blender_manifest.toml", "__init__.py", "fit.py"]);
-        assert!(ADDON_INIT.contains("ADDON_VERSION = \"0.1.12\""), "add-on and manifest versions match");
+        assert!(ADDON_INIT.contains("ADDON_VERSION = \"0.1.13\""), "add-on and manifest versions match");
     }
 
     #[test]

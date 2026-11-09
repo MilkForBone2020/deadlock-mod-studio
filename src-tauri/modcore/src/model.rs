@@ -68,6 +68,139 @@ pub fn blender_anims(doc: &kv3text::Doc) -> String {
     }
 }
 
+/// How one group of physics bones (a chain's wobbly or dangling bones) is
+/// tuned in the app: a preset and multipliers on its settings.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct PhysicsTuning {
+    /// "wobbly", "dangle", "stiff", "floppy"; empty = as Blender suggested.
+    #[serde(default)]
+    pub preset: String,
+    #[serde(default = "one")]
+    pub stiffness: f32,
+    #[serde(default = "one")]
+    pub damping: f32,
+    #[serde(default = "one")]
+    pub gravity: f32,
+    #[serde(default = "one")]
+    pub wander: f32,
+}
+
+fn one() -> f32 {
+    1.0
+}
+
+impl Default for PhysicsTuning {
+    fn default() -> Self {
+        PhysicsTuning { preset: String::new(), stiffness: 1.0, damping: 1.0, gravity: 1.0, wander: 1.0 }
+    }
+}
+
+/// Cloth settings of one joint: (goal_strength, goal_damping, gravity_z,
+/// stray_radius, collision_radius, friction, bend_spring). Scaled like
+/// Valve's own on Celeste and Seven (damping is small: 0.001-0.03).
+pub fn joint_params(preset: &str, index: u32, t: &PhysicsTuning) -> [f32; 7] {
+    let i = index as f32;
+    let base = match preset {
+        "wobbly" => [(0.8 - 0.1 * i).max(0.6), 0.01, 0.3, 2.0 + i, 0.0, 0.0, 1.0],
+        "dangle" => [[0.4, 0.3, 0.2, 0.1][(index as usize).min(3)], 0.003, 1.0, 4.0 + 2.0 * i, 1.0, 0.1, 0.05],
+        "stiff" => [0.9, 0.02, 0.2, 1.0, 0.0, 0.0, 1.0],
+        "floppy" => [0.05, 0.001, 1.0, 12.0 + 2.0 * i, 1.0, 0.1, 0.0],
+        _ => [0.0; 7],
+    };
+    [(base[0] * t.stiffness).clamp(0.0, 1.0), base[1] * t.damping, base[2] * t.gravity, base[3] * t.wander, base[4], base[5], base[6]]
+}
+
+fn set_all(obj: &mut kv3text::Kv, key: &str, value: kv3text::Kv) {
+    if let kv3text::Kv::Object(pairs) = obj {
+        let mut found = false;
+        for (k, v) in pairs.iter_mut() {
+            if k == key {
+                *v = value.clone();
+                found = true;
+            }
+        }
+        if !found {
+            pairs.push((key.to_string(), value));
+        }
+    }
+}
+
+fn kv_num(x: f32) -> kv3text::Kv {
+    let mut t = format!("{:.4}", x);
+    while t.ends_with('0') && !t.ends_with(".0") {
+        t.pop();
+    }
+    kv3text::Kv::Raw(t)
+}
+
+/// Write cloth chains for the physics bones into the model source, copying
+/// the layout of one of the hero's own chains. Returns how many chains were
+/// written, or why none could be.
+pub fn add_cloth_chains(
+    doc: &mut kv3text::Doc,
+    chains: &[crate::blender::PhysicsChain],
+    tuning: &std::collections::BTreeMap<String, PhysicsTuning>,
+) -> std::result::Result<usize, String> {
+    if chains.is_empty() {
+        return Ok(0);
+    }
+    // A chain of the hero's to copy.
+    let mut all = vec![];
+    doc.root.walk(&mut all);
+    let template = all.iter().find(|n| n.class().as_deref() == Some("ClothChain")).map(|n| (*n).clone()).ok_or("this hero has no cloth to copy the layout from, so the physics bones stay rigid")?;
+    let joints_t = template.get("chain").and_then(|c| c.get("joints")).and_then(|j| j.as_array()).cloned().unwrap_or_default();
+    let root_t = joints_t.first().cloned().ok_or("the hero's cloth has no joints to copy")?;
+    let child_t = joints_t.get(1).cloned().unwrap_or_else(|| root_t.clone());
+    let mut made = vec![];
+    for c in chains {
+        let mut node = template.clone();
+        node.set("name", kv3text::Kv::str(&c.name));
+        node.set("root_bone", kv3text::Kv::str(&c.joints.first().map(|j| j.bone.clone()).unwrap_or_default()));
+        let mut joints = vec![];
+        for j in &c.joints {
+            let mut o = if j.parent.is_empty() { root_t.clone() } else { child_t.clone() };
+            set_all(&mut o, "joint_name", kv3text::Kv::str(&j.bone));
+            if !j.parent.is_empty() {
+                set_all(&mut o, "joint_parent", kv3text::Kv::str(&j.parent));
+            }
+            set_all(&mut o, "simulate", kv3text::Kv::Raw(if j.simulate { "true" } else { "false" }.into()));
+            let key = format!("{}/{}", c.name, j.preset);
+            let t = tuning.get(&key).cloned().unwrap_or_default();
+            let preset = if j.simulate && !t.preset.is_empty() { t.preset.as_str() } else { j.preset.as_str() };
+            let p = if j.simulate { joint_params(preset, j.index, &t) } else { [0.0; 7] };
+            for (k, v) in ["goal_strength", "goal_damping", "gravity_z", "stray_radius", "collision_radius", "friction", "bend_spring"].iter().zip(p) {
+                set_all(&mut o, k, kv_num(v));
+            }
+            if !j.simulate {
+                set_all(&mut o, "gravity_z", kv_num(1.0));
+            }
+            joints.push(o);
+        }
+        if let Some(chain) = node.get_mut("chain") {
+            chain.set("joints", kv3text::Kv::Array(joints));
+        }
+        made.push(node);
+    }
+    // Next to the hero's own chains.
+    let n = made.len();
+    let mut pending = Some(made);
+    doc.root.walk_mut(&mut |k: &mut kv3text::Kv| {
+        if pending.is_none() {
+            return;
+        }
+        if let Some(children) = k.children_mut() {
+            if children.iter().any(|c| c.class().as_deref() == Some("ClothChain")) {
+                children.extend(pending.take().unwrap());
+            }
+        }
+    });
+    if pending.is_some() {
+        return Err("couldn't find where the hero's cloth chains live".into());
+    }
+    Ok(n)
+}
+
 /// A hero and where its model lives, from `scripts/heroes.vdata`.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -600,6 +733,7 @@ pub fn apply_returned(
     let glb_path = returned.join(&manifest.glb);
     let g = crate::glb::parse(&std::fs::read(&glb_path).at(&glb_path)?)?;
     let meshes = crate::glb::skinned_meshes(&g)?;
+    let glb_joints = crate::glb::joints(&g);
     let summary: ModelSummary = serde_json::from_slice(&std::fs::read(project_dir.join("summary.json")).at(project_dir)?)?;
     let mut materials: std::collections::HashMap<String, String> = summary
         .materials
@@ -628,7 +762,7 @@ pub fn apply_returned(
         let file = part_file(doc, &part.name).ok_or_else(|| Error::msg(format!("The model source has no mesh file for {}", part.name)))?;
         let orig_path = native(&original, &file);
         let orig = std::fs::read(&orig_path).at(&orig_path)?;
-        match crate::meshswap::swap(&orig, &mine, &materials, 1.0).map_err(|e| Error::msg(format!("{}: {e}", part.name)))? {
+        match crate::meshswap::swap_with_bones(&orig, &mine, &materials, 1.0, &glb_joints).map_err(|e| Error::msg(format!("{}: {e}", part.name)))? {
             crate::meshswap::Swap::Unchanged => {
                 results.push(PartResult { part: part.name.clone(), status: "kept".into(), vertices: 0, triangles: 0 });
             }
@@ -651,6 +785,9 @@ pub fn apply_returned(
 #[derive(Serialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct ModelBuildReport {
+    /// Cloth chains written for physics bones.
+    #[serde(default)]
+    pub physics_chains: usize,
     /// Parts swapped from the Blender model (empty for an unchanged rebuild).
     pub parts: Vec<PartResult>,
     /// Materials rebuilt with textures changed in Blender.
@@ -671,6 +808,7 @@ pub fn build(
     project_dir: &Path,
     slug: &str,
     returned: Option<&Path>,
+    physics: &std::collections::BTreeMap<String, PhysicsTuning>,
     out_vpk: &Path,
     runner: &csdk::Runner,
     progress: &dyn Fn(&str),
@@ -703,6 +841,8 @@ pub fn build(
     use_backup_animations(&mut doc, model)?;
     let mut part_results = vec![];
     let mut material_results = vec![];
+    let mut physics_chains = 0;
+    let mut physics_note: Option<String> = None;
     if let Some(r) = returned {
         let manifest: crate::blender::Returned = serde_json::from_slice(&std::fs::read(r.join("manifest.json")).at(r)?)?;
         progress("Preparing your materials and textures");
@@ -711,6 +851,13 @@ pub fn build(
         progress("Converting your model from Blender");
         part_results = apply_returned(&mut doc, project_dir, model, r, &content_root, &applied.new_paths)?;
         material_results = applied.results;
+        if !manifest.physics.is_empty() {
+            progress("Adding physics");
+            match add_cloth_chains(&mut doc, &manifest.physics, physics) {
+                Ok(n) => physics_chains = n,
+                Err(e) => physics_note = Some(format!("Physics skipped: {e}")),
+            }
+        }
     }
     let overridden: BTreeSet<String> = material_results.iter().map(|m| format!("{}_c", m.path.to_lowercase())).collect();
     let src = native(&content_root, &format!("{dir}/{name}.vmdl"));
@@ -796,8 +943,13 @@ pub fn build(
         })
         .map(|l| l.trim().to_string())
         .take(50)
-        .collect();
+        .collect::<Vec<String>>();
+    let mut warnings = warnings;
+    if let Some(n) = physics_note {
+        warnings.insert(0, n);
+    }
     Ok(ModelBuildReport {
+        physics_chains,
         parts: part_results,
         materials: material_results,
         vpk: out_vpk.display().to_string(),
@@ -1012,7 +1164,7 @@ mod tests {
             Ok((true, "WARNING: something minor\nOK: 1 compiled, 0 failed".into()))
         };
         let out = t.path().join("out/hero.vpk");
-        let b = build(&csdk_dir, &game, model, &project, "Seven test", None, &out, &compiler, &|_| {}).unwrap();
+        let b = build(&csdk_dir, &game, model, &project, "Seven test", None, &Default::default(), &out, &compiler, &|_| {}).unwrap();
         assert_eq!(b.files, vec!["models/heroes_staging/hero/hero.vmdl_c", "models/heroes_staging/hero/hero_backup.vmdl_c"]);
         assert_eq!(b.warnings, vec!["WARNING: something minor"]);
         let packed = vpk::read_directory(&out).unwrap();
@@ -1089,5 +1241,33 @@ mod tests {
         assert_eq!(blender_anims(&mk(&["self_primary_aim_idle", "primary_stand_idle", "primary_run_n", "ui_hero_pose"])), "primary_stand_idle,primary_run_n,ui_hero_pose");
         assert_eq!(blender_anims(&mk(&["melee_idle", "baton_run_n", "baton_crouch_idle"])), "melee_idle,baton_run_n,baton_crouch_idle");
         assert_eq!(blender_anims(&mk(&[])), BLENDER_ANIMS);
+    }
+
+    #[test]
+    fn cloth_chains_copy_the_heros_layout() {
+        let text = "<!-- kv3 encoding:text:version{e21c7f3c-8a33-41c5-9977-a76d3a32aa0d} format:modeldoc29:version{3cec427c-1b0e-4d48-a90a-0436f33a6041} -->\n{ rootNode = { children = [ { _class = \"Softbody\" children = [ { _class = \"Folder\" children = [ { _class = \"ClothChain\" name = \"hair\" root_bone = \"hair_0\" chain = { joints = [ { joint_name = \"hair_0\" simulate = false goal_strength = 0.6 collision_radius = 0.0 collision_radius = 0.5 }, { joint_name = \"hair_1\" joint_parent = \"hair_0\" simulate = true goal_strength = 0.1 } ] attrs = { } } } ] } ] } ] } }";
+        let mut doc = kv3text::parse(text).unwrap();
+        let chains = vec![crate::blender::PhysicsChain {
+            name: "dms_root".into(),
+            parent: "head".into(),
+            joints: vec![
+                crate::blender::PhysicsJoint { bone: "dms_root".into(), parent: "".into(), simulate: false, preset: "pinned".into(), index: 0 },
+                crate::blender::PhysicsJoint { bone: "dms_cable_2".into(), parent: "dms_root".into(), simulate: true, preset: "dangle".into(), index: 0 },
+            ],
+        }];
+        let mut tuning = std::collections::BTreeMap::new();
+        tuning.insert("dms_root/dangle".to_string(), PhysicsTuning { stiffness: 0.5, ..Default::default() });
+        assert_eq!(add_cloth_chains(&mut doc, &chains, &tuning), Ok(1));
+        let out = kv3text::to_string(&doc);
+        assert!(out.contains("name = \"dms_root\"") && out.contains("root_bone = \"dms_root\""));
+        assert!(out.contains("joint_parent = \"dms_root\""));
+        assert!(out.contains("goal_strength = 0.2"), "0.4 x 0.5 stiffness: {out}");
+        assert!(out.contains("goal_damping = 0.003"));
+        let mine = &out[out.find("name = \"dms_root\"").unwrap()..];
+        assert!(!mine.contains("collision_radius = 0.5"), "duplicate keys all set");
+        assert!(kv3text::parse(&out).is_ok());
+        assert_eq!(out.matches("_class = \"ClothChain\"").count(), 2);
+        let empty: Vec<crate::blender::PhysicsChain> = vec![];
+        assert_eq!(add_cloth_chains(&mut kv3text::parse(text).unwrap(), &empty, &tuning), Ok(0));
     }
 }

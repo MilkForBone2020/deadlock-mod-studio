@@ -535,3 +535,17 @@ details summary { cursor: pointer; color: var(--muted); font-size: 13px; }
 .title-input { font-size: 20px; font-weight: 600; background: transparent; border-color: transparent; padding: 4px 6px; max-width: 520px; }
 .title-input:hover, .title-input:focus { border-color: var(--line-2); background: var(--bg); }
 .danger-zone { margin-top: 18px; }
+
+/* Physics */
+.phys-panel { display: flex; flex-direction: column; gap: 12px; margin: 16px 0; padding: 16px 18px; background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); }
+.phys-panel h3 { margin: 0 0 4px; }
+.phys-panel .hint { margin: 0; }
+.phys-group { border: 1px solid var(--line-2); border-radius: 10px; padding: 12px 14px; display: flex; flex-direction: column; gap: 10px; }
+.phys-head { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+.phys-head select { width: auto; margin-left: auto; }
+.phys-sliders { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 10px 18px; }
+.phys-sliders label { display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: var(--muted); }
+.phys-sliders em { font-style: normal; color: var(--text); font-family: var(--mono); font-size: 12px; }
+.phys-sliders input { width: 100%; padding: 0; border: 0; background: transparent; accent-color: var(--gold); }
+.phys-foot { display: flex; justify-content: space-between; gap: 12px; }
+.mono { font-family: var(--mono); font-size: 12px; }

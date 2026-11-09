@@ -22,7 +22,7 @@ from bpy.props import EnumProperty, StringProperty
 from . import fit
 from mathutils import Vector
 
-ADDON_VERSION = "0.1.12"
+ADDON_VERSION = "0.1.13"
 MAX_WEIGHTS = 4
 # Fairness rule: a custom model stays close to the original's size. Smaller
 # is the unfair direction; accessories that stick out make you easier to see.
@@ -774,6 +774,8 @@ def run_fit(scene, into_part, replace, mode="SHAPE"):
         for o in list(inc.all_objects):
             bpy.data.objects.remove(o)
         bpy.data.collections.remove(inc)
+    if report.get("physics"):
+        scene["dms_physics"] = json.dumps(report["physics"])
     report["part"] = into_part
     report["replaced"] = sorted(replace)
     scene["dms_fit_report"] = json.dumps(report, default=str)
@@ -1216,6 +1218,7 @@ def send_to_app(scene=None):
         "objects": [{"object": o.name, "part": o.get("dms_part", ""), "triangles": sum(len(p.vertices) - 2 for p in o.data.polygons)} for o in meshes],
         "materials": used,
         "materialFiles": material_files,
+        "physics": json.loads(scene.get("dms_physics", "[]")),
     }
     with open(os.path.join(out_dir, "manifest.json"), "w", encoding="utf-8") as f:
         json.dump(manifest, f, indent=2)

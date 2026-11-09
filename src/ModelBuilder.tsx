@@ -3,6 +3,7 @@ import { listen } from "@tauri-apps/api/event";
 import { api, errorText, isTauri } from "./api";
 import type { ModelBuildResult, ModelHero, ModelProject, ModelSummary, Overview, Returned } from "./types";
 import { formatDate, formatSize, Icon, Modal } from "./ui";
+import { PhysicsPanel } from "./PhysicsPanel";
 // three.js is big: load the preview only when it opens.
 const ModelPreview = lazy(() => import("./ModelPreview").then((m) => ({ default: m.ModelPreview })));
 
@@ -369,6 +370,8 @@ function ModelEditor({
         </Suspense>
       )}
 
+      {latest?.physics && latest.physics.length > 0 && <PhysicsPanel projectId={p.id} chains={latest.physics} tuning={p.physics ?? {}} act={act} />}
+
       {summary && <SummaryCard s={summary} heroName={heroName} openSource={() => act(() => api.openModelFolder(p.id, "original"))} />}
 
       <div className="build-bar">
@@ -521,6 +524,7 @@ function ModelReportModal({ r, heroName, close, goLibrary }: { r: ModelBuildResu
           </li>
         ))}
       </ul>
+      {(r.report.physicsChains ?? 0) > 0 && <p className="hint">Physics: {r.report.physicsChains} cloth chain(s) added. Check the swing in game; tune it in Physics and rebuild.</p>}
       {r.report.warnings.length > 0 && (
         <>
           <h3>Compiler warnings ({r.report.warnings.length})</h3>

@@ -230,6 +230,7 @@ export interface ModelProject {
   extractedTool: string | null;
   modId: string | null;
   lastBuilt: string | null;
+  physics?: Record<string, PhysicsTuning>;
 }
 
 export interface ModelSummary {
@@ -255,7 +256,7 @@ export interface ModelBuildResult {
   report: {
     parts: { part: string; status: "replaced" | "kept" | "removed"; vertices: number; triangles: number }[];
     materials: { material: string; path: string; color: string | null; size: [number, number]; resized: boolean; new: boolean }[];
-    vpk: string; vpkSize: number; files: string[]; warnings: string[]; log: string };
+    vpk: string; vpkSize: number; files: string[]; warnings: string[]; log: string; physicsChains?: number };
   modId: string;
   modName: string;
 }
@@ -274,6 +275,21 @@ export interface Returned {
   objects: { object: string; part: string; triangles: number }[];
   materials: string[];
   materialFiles?: { name: string; color: string | null; new?: boolean }[];
+  physics?: PhysicsChain[];
+}
+
+export interface PhysicsChain {
+  name: string;
+  parent: string;
+  joints: { bone: string; parent: string; simulate: boolean; preset: string; index: number }[];
+}
+
+export interface PhysicsTuning {
+  preset: string;
+  stiffness: number;
+  damping: number;
+  gravity: number;
+  wander: number;
 }
 
 export interface PreviewMaterial {
