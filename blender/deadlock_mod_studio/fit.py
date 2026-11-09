@@ -351,8 +351,8 @@ def fit_to_hero(meshes, hero, hero_meshes, scene=None, mode="SHAPE"):
             pairs.append(segs[k].head - src[roles[k]]["head"])
     if pairs:
         off = sum(pairs, Vector()) / len(pairs)
-        shift = Matrix.Translation((off.x, off.y, 0.0))
-        report["centred"] = [round(off.x, 4), round(off.y, 4)]
+        shift = Matrix.Translation((off.x, off.y, off.z if mode != "SKELETON" else 0.0))
+        report["centred"] = [round(off.x, 4), round(off.y, 4), round(off.z, 4)]
         for o in meshes:
             o.data.transform(shift)
         for d in src.values():
@@ -454,9 +454,7 @@ def fit_to_hero(meshes, hero, hero_meshes, scene=None, mode="SHAPE"):
         if old.users == 0:
             bpy.data.meshes.remove(old)
 
-    if mode == "SHAPE":
-        # Turning the feet to the hero's (heels, say) moves the soles: stand
-        # the model back on the ground.
+    if False:
         lo2, _ = mesh_height(meshes)
         lift = Matrix.Translation((0, 0, hlo - lo2))
         for o in meshes:
@@ -509,6 +507,7 @@ def shape_poses(fit_data, mapped, role_of, src, fit_limbs=False):
         return None
 
     poses = {}
+    by_role = {k: m for m, k in role_of.items() if m in mapped}
 
     def pose(n, seen=()):
         """Pose of `n`, its matched parent's first (Rigify's palms and
@@ -529,13 +528,32 @@ def shape_poses(fit_data, mapped, role_of, src, fit_limbs=False):
             return carried
         head = carried.translation
         stretch = 1.0
+        side = role_of.get(n, ("", ""))[1]
+        if not fit_limbs and key in ("forearm", "forearm2", "shin", "shin2"):
+            # Wrists and ankles land on the hero's: the forearm and shin
+            # take up the difference in length, everything else keeps shape.
+            base = key.rstrip("2")
+            first = by_role.get((base, side))
+            second = by_role.get((base + "2", side))
+            last = second or first
+            end = mapped[last].tail
+            if key == base:
+                a, b = head, (head.lerp(end, 0.5) if second else end)
+            else:
+                a = pose(first, seen + (n,)).translation.lerp(end, 0.5) if first else head
+                b = end
+            stretch = (b - a).length / max(fit_data.bones[n].length, 1e-9)
+            cur_dir = (carried.to_3x3() @ Vector((0, 1, 0))).normalized()
+            rot = cur_dir.rotation_difference((b - a).normalized()).to_matrix() @ carried.to_3x3()
+            poses[n] = Matrix.Translation(a) @ rot.to_4x4() @ Matrix.Diagonal((1.0, stretch, 1.0, 1.0))
+            return poses[n]
         if key == "shoulder":
             # Reach from where the shoulder piece is to the hero's shoulder joint.
             target = seg.tail - head
             stretch = target.length / max(fit_data.bones[n].length, 1e-9)
             new_dir = target.normalized()
         else:
-            if key in LIMB_ROOTS or (fit_limbs and (key in LIMBS or key in LIMB_ENDS)):
+            if key in LIMB_ROOTS or key in LIMB_ENDS or (fit_limbs and key in LIMBS):
                 head = seg.head
             new_dir = (seg.tail - seg.head).normalized()
             if fit_limbs and key in LIMBS:
