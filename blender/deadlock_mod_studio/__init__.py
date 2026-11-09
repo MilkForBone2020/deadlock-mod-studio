@@ -20,7 +20,7 @@ import bpy
 from bpy.props import EnumProperty, StringProperty
 from mathutils import Vector
 
-ADDON_VERSION = "0.1.2"
+ADDON_VERSION = "0.1.3"
 MAX_WEIGHTS = 4
 # Fairness rule: a custom model stays close to the original's size.
 SIZE_TOLERANCE = 0.10
@@ -132,7 +132,7 @@ def import_hero(path, project):
     _clear_scene()
     scene["dms_project"] = path
     before = set(bpy.data.objects)
-    bpy.ops.import_scene.gltf(filepath=project["glb"], import_shading="NORMALS", disable_bone_shape=True)
+    bpy.ops.import_scene.gltf(filepath=project["glb"], import_shading="NORMALS", disable_bone_shape=True, import_pack_images=False)
     new = [o for o in bpy.data.objects if o not in before]
     arm = next((o for o in new if o.type == "ARMATURE"), None)
     if arm is None:
@@ -198,7 +198,8 @@ def import_hero(path, project):
     for m in bpy.data.materials:
         img = base_color_image(m)
         if img:
-            mats[m.name] = {"color": {"image": img.name, "hash": file_hash(bpy.path.abspath(img.filepath))}}
+            h = hashlib.md5(bytes(img.packed_file.data)).hexdigest() if img.packed_file else file_hash(bpy.path.abspath(img.filepath))
+            mats[m.name] = {"color": {"image": img.name, "hash": h}}
     scene["dms_materials"] = json.dumps(mats)
     scene["dms_imported"] = time.strftime("%Y-%m-%dT%H:%M:%S")
 
@@ -266,10 +267,12 @@ def image_changed(img, original_hash):
     """Has this image been painted, replaced or edited since import?"""
     if img.size[0] == 0 or img.size[1] == 0:
         return False  # no pixels loaded (file missing): nothing to send
-    if img.is_dirty or img.packed_file is not None:
+    if img.is_dirty:
         return True
     if not original_hash:
         return False
+    if img.packed_file is not None:
+        return hashlib.md5(bytes(img.packed_file.data)).hexdigest() != original_hash
     return file_hash(bpy.path.abspath(img.filepath)) != original_hash
 
 
@@ -648,7 +651,15 @@ def send_to_app(scene=None):
             if replaced or image_changed(img, orig.get("hash", "")):
                 os.makedirs(os.path.join(out_dir, "textures"), exist_ok=True)
                 rel = f"textures/{bpy.path.clean_name(name)}_color.png"
-                save_image_copy(img, os.path.join(out_dir, rel))
+                disk = bpy.path.abspath(img.filepath)
+                if not img.is_dirty and img.packed_file is None and os.path.isfile(disk):
+                    # Edited in another program: the file is newer than Blender's copy.
+                    import shutil
+
+                    rel = rel[:-4] + os.path.splitext(disk)[1].lower()
+                    shutil.copyfile(disk, os.path.join(out_dir, rel))
+                else:
+                    save_image_copy(img, os.path.join(out_dir, rel))
                 entry["color"] = rel
         material_files.append(entry)
 
