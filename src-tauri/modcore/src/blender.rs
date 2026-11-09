@@ -174,18 +174,30 @@ pub struct Returned {
     pub objects: Vec<ReturnedObject>,
     #[serde(default)]
     pub materials: Vec<String>,
-    /// Materials whose textures changed in Blender.
+    /// Every material the model uses, with repainted textures and values.
     #[serde(default)]
     pub material_files: Vec<MaterialFile>,
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct MaterialFile {
     pub name: String,
     /// Path (inside the returned folder) of a repainted colour texture.
     #[serde(default)]
     pub color: Option<String>,
+    /// Not one of the hero's materials (as the add-on saw it; the app
+    /// decides again by name).
+    #[serde(default)]
+    pub new: bool,
+    /// Base Color (linear RGBA) when no image is plugged in.
+    #[serde(default)]
+    pub color_value: Option<[f32; 4]>,
+    /// Principled Roughness / Metallic values, when not driven by a texture.
+    #[serde(default)]
+    pub roughness: Option<f32>,
+    #[serde(default)]
+    pub metallic: Option<f32>,
 }
 
 pub fn returned(return_dir: &Path) -> Vec<Returned> {
@@ -213,12 +225,12 @@ mod tests {
 
     #[test]
     fn addon_packs_with_its_version() {
-        assert_eq!(addon_version(), "0.1.4");
+        assert_eq!(addon_version(), "0.1.5");
         let z = addon_zip().unwrap();
         let mut a = zip::ZipArchive::new(std::io::Cursor::new(z)).unwrap();
         let names: Vec<String> = (0..a.len()).map(|i| a.by_index(i).unwrap().name().to_string()).collect();
         assert_eq!(names, vec!["blender_manifest.toml", "__init__.py"]);
-        assert!(ADDON_INIT.contains("ADDON_VERSION = \"0.1.4\""), "add-on and manifest versions match");
+        assert!(ADDON_INIT.contains("ADDON_VERSION = \"0.1.5\""), "add-on and manifest versions match");
     }
 
     #[test]

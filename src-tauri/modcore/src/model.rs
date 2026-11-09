@@ -558,6 +558,7 @@ pub fn apply_returned(
     model: &str,
     returned: &Path,
     content_root: &Path,
+    new_materials: &std::collections::HashMap<String, String>,
 ) -> Result<Vec<PartResult>> {
     let (dir, name) = split_model(model)?;
     let manifest: crate::blender::Returned = serde_json::from_slice(&std::fs::read(returned.join("manifest.json")).at(returned)?)?;
@@ -565,11 +566,12 @@ pub fn apply_returned(
     let g = crate::glb::parse(&std::fs::read(&glb_path).at(&glb_path)?)?;
     let meshes = crate::glb::skinned_meshes(&g)?;
     let summary: ModelSummary = serde_json::from_slice(&std::fs::read(project_dir.join("summary.json")).at(project_dir)?)?;
-    let materials: std::collections::HashMap<String, String> = summary
+    let mut materials: std::collections::HashMap<String, String> = summary
         .materials
         .iter()
         .map(|p| (p.rsplit('/').next().unwrap_or(p).trim_end_matches(".vmat").to_string(), p.clone()))
         .collect();
+    materials.extend(new_materials.iter().map(|(k, v)| (k.clone(), v.clone())));
     let part_of: std::collections::HashMap<&str, &str> = manifest.objects.iter().map(|o| (o.object.as_str(), o.part.as_str())).collect();
     let parts = parts(doc);
     for m in &meshes {
@@ -667,14 +669,13 @@ pub fn build(
     let mut part_results = vec![];
     let mut material_results = vec![];
     if let Some(r) = returned {
-        progress("Converting your model from Blender");
-        part_results = apply_returned(&mut doc, project_dir, model, r, &content_root)?;
         let manifest: crate::blender::Returned = serde_json::from_slice(&std::fs::read(r.join("manifest.json")).at(r)?)?;
-        if manifest.material_files.iter().any(|m| m.color.is_some()) {
-            progress("Preparing your textures");
-            let summary: ModelSummary = serde_json::from_slice(&std::fs::read(project_dir.join("summary.json")).at(project_dir)?)?;
-            material_results = crate::material::apply(r, &manifest.material_files, &summary.materials, &original, &content_root)?;
-        }
+        progress("Preparing your materials and textures");
+        let summary: ModelSummary = serde_json::from_slice(&std::fs::read(project_dir.join("summary.json")).at(project_dir)?)?;
+        let applied = crate::material::apply(r, &manifest.material_files, &summary.materials, model, &original, &content_root)?;
+        progress("Converting your model from Blender");
+        part_results = apply_returned(&mut doc, project_dir, model, r, &content_root, &applied.new_paths)?;
+        material_results = applied.results;
     }
     let overridden: BTreeSet<String> = material_results.iter().map(|m| format!("{}_c", m.path.to_lowercase())).collect();
     let src = native(&content_root, &format!("{dir}/{name}.vmdl"));

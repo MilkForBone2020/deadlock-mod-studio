@@ -161,7 +161,8 @@ pub fn tangents(pos: &[[f64; 3]], nrm: &[[f64; 3]], uv: &[[f32; 2]], tris: &[u32
 }
 
 /// Replace the mesh in `original` (a part's DMX) with `meshes`.
-/// `materials` maps a material name (as in Blender) to its `.vmat` path.
+/// `materials` maps a material name (as in Blender, or a hero material's
+/// base name) to its `.vmat` path.
 pub fn swap(original: &[u8], meshes: &[&SkinnedMesh], materials: &HashMap<String, String>, tangent_sign: f64) -> Result<Swap> {
     let mut d = dmx::parse(original)?;
     let model = d.elements[0].element("model").ok_or_else(|| Error::msg("DMX has no model"))?;
@@ -195,10 +196,15 @@ pub fn swap(original: &[u8], meshes: &[&SkinnedMesh], materials: &HashMap<String
             infl.push(w4);
         }
         for (mat, tris) in &m.sets {
-            let key = base_material_name(mat).to_string();
+            if mat.is_empty() {
+                return Err(Error::msg(format!("{} has faces without a material. Give it a material in Blender.", m.object)));
+            }
+            // New materials go by their exact name, the hero's by base name
+            // (Blender may have added .001).
             let path = materials
-                .get(&key)
-                .ok_or_else(|| Error::msg(format!("{}: material \"{mat}\" isn't one of the hero's materials (new materials aren't supported yet)", m.object)))?
+                .get(mat.as_str())
+                .or_else(|| materials.get(base_material_name(mat)))
+                .ok_or_else(|| Error::msg(format!("{}: material \"{mat}\" wasn't sent from Blender", m.object)))?
                 .clone();
             let shifted: Vec<u32> = tris.iter().map(|i| i + base).collect();
             match sets.iter_mut().find(|s| s.0 == path) {

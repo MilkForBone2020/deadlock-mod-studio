@@ -20,10 +20,12 @@ import bpy
 from bpy.props import EnumProperty, StringProperty
 from mathutils import Vector
 
-ADDON_VERSION = "0.1.4"
+ADDON_VERSION = "0.1.5"
 MAX_WEIGHTS = 4
-# Fairness rule: a custom model stays close to the original's size.
+# Fairness rule: a custom model stays close to the original's size. Smaller
+# is the unfair direction; accessories that stick out make you easier to see.
 SIZE_TOLERANCE = 0.10
+SIZE_GROWTH_LIMIT = 0.40
 BONE_MOVE_TOLERANCE = 0.001  # metres (about 0.04 game units)
 MODEL_COLLECTION = "Your model"
 REFERENCE_COLLECTION = "Reference (original)"
@@ -201,6 +203,7 @@ def import_hero(path, project):
             h = hashlib.md5(bytes(img.packed_file.data)).hexdigest() if img.packed_file else file_hash(bpy.path.abspath(img.filepath))
             mats[m.name] = {"color": {"image": img.name, "hash": h}}
     scene["dms_materials"] = json.dumps(mats)
+    scene["dms_materials_all"] = json.dumps(sorted(m.name for m in bpy.data.materials))
     scene["dms_imported"] = time.strftime("%Y-%m-%dT%H:%M:%S")
 
 
@@ -253,6 +256,29 @@ def base_color_image(mat):
                 if src.type == "TEX_IMAGE" and src.image:
                     return src.image
     return None
+
+
+def principled(mat):
+    if not mat or not mat.use_nodes or not mat.node_tree:
+        return None
+    return next((n for n in mat.node_tree.nodes if n.type == "BSDF_PRINCIPLED"), None)
+
+
+def base_name(name):
+    """A material name without Blender's .001 suffix."""
+    head, dot, tail = name.rpartition(".")
+    return head if dot and tail.isdigit() and len(tail) == 3 else name
+
+
+def hero_material(name, scene=None):
+    """Is this one of the hero's own materials (as imported)?"""
+    scene = scene or bpy.context.scene
+    names = json.loads(scene.get("dms_materials_all", "[]"))
+    if not names:
+        # Work files from before 0.1.5: the reference copy uses the hero's materials.
+        names = list(json.loads(scene.get("dms_materials", "{}")))
+        names += [s.material.name for o in reference_meshes() for s in o.material_slots if s.material]
+    return base_name(name) in {base_name(n) for n in names}
 
 
 def file_hash(path):
@@ -373,7 +399,9 @@ def run_checks(scene=None):
             issues.append(Issue("warn", f"{o.name}: vertex groups that aren't bones are ignored ({', '.join(stray[:3])})"))
         tris += sum(len(p.vertices) - 2 for p in o.data.polygons)
         if not o.material_slots or not any(s.material for s in o.material_slots):
-            issues.append(Issue("warn", f"{o.name}: has no material"))
+            issues.append(Issue("error", f"{o.name}: has no material (add one in the Material tab)", "", o.name))
+        elif any(s.material is None for s in o.material_slots):
+            issues.append(Issue("error", f"{o.name}: has an empty material slot", "", o.name))
         for s in o.material_slots:
             if s.material:
                 materials.add(s.material.name)
@@ -399,10 +427,15 @@ def run_checks(scene=None):
         h0, h1 = ref[2], size.z
         if h0 > 0:
             change = (h1 - h0) / h0
-            if abs(change) > SIZE_TOLERANCE:
-                issues.append(Issue("error", f"Height is {change:+.0%} vs the original: keep within ±{SIZE_TOLERANCE:.0%}"))
+            if change < -SIZE_TOLERANCE:
+                issues.append(Issue("error", f"Height is {change:+.0%} vs the original: a smaller hero is harder to hit, keep within -{SIZE_TOLERANCE:.0%}"))
+            elif change > SIZE_GROWTH_LIMIT:
+                issues.append(Issue("error", f"Height is {change:+.0%} vs the original: keep within +{SIZE_GROWTH_LIMIT:.0%}"))
             elif abs(change) > SIZE_TOLERANCE / 2:
-                issues.append(Issue("warn", f"Height is {change:+.0%} vs the original"))
+                issues.append(Issue("warn", f"Height is {change:+.0%} vs the original (hitboxes stay the original's)"))
+    new_mats = [m for m in sorted(materials) if not hero_material(m, scene)]
+    if new_mats:
+        issues.append(Issue("info", f"New material(s): {', '.join(new_mats[:4])} (made from the hero's main material)"))
 
     issues.append(Issue("info", f"{len(meshes)} object(s), {tris:,} triangles, {len(materials)} material(s)"))
     return issues
@@ -463,6 +496,88 @@ class DMS_OT_set_part(bpy.types.Operator):
             if model and o.name not in model.objects and REFERENCE_COLLECTION not in [c.name for c in o.users_collection]:
                 model.objects.link(o)
         self.report({"INFO"}, f"{len(objs)} object(s) set to {self.part}")
+        return {"FINISHED"}
+
+
+def attach_to_bone(obj, arm, bone_name, scene=None):
+    """Make `obj` follow one bone rigidly: parented to the rig, deformed by
+    it, every vertex weighted 1.0 to the bone. The object stays where it is
+    on screen, whatever pose the rig is in."""
+    pb = arm.pose.bones[bone_name]
+    rest = arm.data.bones[bone_name].matrix_local
+    bpy.context.view_layer.update()
+    # Where it is now (posed) -> where it is at rest, in the rig's space.
+    to_rest = rest @ pb.matrix.inverted() @ arm.matrix_world.inverted() @ obj.matrix_world
+    for m in [m for m in obj.modifiers if m.type == "ARMATURE"]:
+        obj.modifiers.remove(m)
+    if obj.data.users > 1:
+        obj.data = obj.data.copy()
+    obj.data.transform(to_rest, shape_keys=True)
+    obj.parent = arm
+    obj.parent_type = "OBJECT"
+    obj.matrix_parent_inverse.identity()
+    obj.matrix_basis.identity()
+    obj.vertex_groups.clear()
+    g = obj.vertex_groups.new(name=bone_name)
+    g.add([v.index for v in obj.data.vertices], 1.0, "REPLACE")
+    mod = obj.modifiers.new("Armature", "ARMATURE")
+    mod.object = arm
+    # Into my model, and into the part that uses this bone most.
+    model = bpy.data.collections.get(MODEL_COLLECTION)
+    if model and obj.name not in model.objects:
+        for c in list(obj.users_collection):
+            c.objects.unlink(obj)
+        model.objects.link(obj)
+    project = load_project(scene)
+    if obj.get("dms_part", "") not in part_names(project):
+        best, count = "", -1
+        for o in model_meshes(scene):
+            part = o.get("dms_part", "")
+            grp = o.vertex_groups.get(bone_name)
+            if o == obj or not part or grp is None:
+                continue
+            n = 0
+            for v in o.data.vertices:
+                for e in v.groups:
+                    if e.group == grp.index and e.weight > 0.5:
+                        n += 1
+            if n > count:
+                best, count = part, n
+        obj["dms_part"] = best or (part_names(project) or [""])[0]
+    return obj["dms_part"]
+
+
+class DMS_OT_attach_to_bone(bpy.types.Operator):
+    """Attach the selected objects to one bone so they move with it, like a hat on the head. Keeps them where they are"""
+
+    bl_idname = "dms.attach_to_bone"
+    bl_label = "Attach to bone"
+    bl_options = {"REGISTER", "UNDO"}
+    bl_property = "bone"
+
+    def items(self, context):
+        arm = rig(context.scene)
+        return [(b.name, b.name, "") for b in arm.data.bones] if arm else [("", "No rig", "")]
+
+    bone: EnumProperty(name="Bone", items=items)
+
+    def invoke(self, context, event):
+        context.window_manager.invoke_search_popup(self)
+        return {"RUNNING_MODAL"}
+
+    def execute(self, context):
+        arm = rig(context.scene)
+        objs = [o for o in context.selected_objects if o.type == "MESH" and REFERENCE_COLLECTION not in [c.name for c in o.users_collection]]
+        if not arm or not self.bone or self.bone not in arm.data.bones:
+            self.report({"WARNING"}, "Pick one of the rig's bones")
+            return {"CANCELLED"}
+        if not objs:
+            self.report({"WARNING"}, "Select the mesh objects first")
+            return {"CANCELLED"}
+        if context.object and context.object.mode != "OBJECT":
+            bpy.ops.object.mode_set(mode="OBJECT")
+        parts = sorted({attach_to_bone(o, arm, self.bone, context.scene) for o in objs})
+        self.report({"INFO"}, f"{len(objs)} object(s) attached to {self.bone} (part: {', '.join(parts)})")
         return {"FINISHED"}
 
 
@@ -780,7 +895,20 @@ def send_to_app(scene=None):
     for name in used:
         mat = bpy.data.materials[name]
         img = base_color_image(mat)
-        entry = {"name": name, "color": None}
+        entry = {"name": name, "color": None, "new": not hero_material(name, scene)}
+        bsdf = principled(mat)
+        if entry["new"]:
+            # A new material: plain values from the shader where no texture is plugged in.
+            if bsdf is not None:
+                for key, socket in (("roughness", "Roughness"), ("metallic", "Metallic")):
+                    inp = bsdf.inputs.get(socket)
+                    if inp is not None and not inp.is_linked:
+                        entry[key] = float(inp.default_value)
+                inp = bsdf.inputs.get("Base Color")
+                if img is None and inp is not None:
+                    entry["colorValue"] = [float(x) for x in inp.default_value]
+            elif img is None:
+                entry["colorValue"] = [float(x) for x in mat.diffuse_color]
         if img is not None:
             orig = originals.get(name, {}).get("color", {})
             replaced = img.name != orig.get("image") and img.size[0] > 0
@@ -877,6 +1005,12 @@ class DMS_PT_main(bpy.types.Panel):
             row = box.row()
             row.label(text=f"{obj.name}: {obj.get('dms_part') or 'not assigned'}")
             row.operator_menu_enum("dms.set_part", "part", text="Set")
+            row = box.row(align=True)
+            row.operator_context = "EXEC_DEFAULT"  # straight to the head, no search
+            op = row.operator("dms.attach_to_bone", text="Attach to head", icon="BONE_DATA")
+            op.bone = "head"
+            row.operator_context = "INVOKE_DEFAULT"
+            row.operator("dms.attach_to_bone", text="Attach to bone…")
         meshes = model_meshes(scene)
         for p in project.get("parts", []):
             n = sum(1 for o in meshes if o.get("dms_part") == p["name"])
@@ -905,7 +1039,8 @@ class DMS_PT_main(bpy.types.Panel):
         for mat, img, objs in users:
             col = box.column(align=True)
             row = col.row(align=True)
-            row.label(text=f"{mat.name}: {', '.join(objs)}", icon="MATERIAL")
+            new = "" if hero_material(mat.name, scene) else " (new)"
+            row.label(text=f"{mat.name}{new}: {', '.join(objs)}", icon="MATERIAL")
             row = col.row(align=True)
             row.operator("dms.paint_texture", text="Paint", icon="BRUSH_DATA").material = mat.name
             row.operator("dms.edit_outside", text="Edit outside", icon="IMAGE").material = mat.name
@@ -941,6 +1076,7 @@ class DMS_PT_main(bpy.types.Panel):
 classes = (
     DMS_OT_open_project,
     DMS_OT_set_part,
+    DMS_OT_attach_to_bone,
     DMS_OT_check,
     DMS_OT_limit_weights,
     DMS_OT_select_unweighted,

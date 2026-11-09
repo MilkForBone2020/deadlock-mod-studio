@@ -308,7 +308,7 @@ export const mockApi: Api = {
               { part: "headgear", status: "replaced", vertices: 13434, triangles: 22515 },
             ]
           : [],
-        materials: withModel ? [{ material: "gigawatt_prisoner", path: "models/heroes_staging/gigawatt_prisoner/materials/gigawatt_prisoner.vmat", color: "x_dms_color.png", size: [2048, 2048], resized: false }] : [],
+        materials: withModel ? [{ material: "gigawatt_prisoner", path: "models/heroes_staging/gigawatt_prisoner/materials/gigawatt_prisoner.vmat", color: "x_dms_color.png", size: [2048, 2048], resized: false, new: false }, { material: "Top Hat Felt", path: "models/heroes_staging/gigawatt_prisoner/dms_materials/top_hat_felt.vmat", color: "top_hat_felt_color.png", size: [4, 4], resized: false, new: true }] : [],
         vpk: "x.vpk", vpkSize: 21_400_000, files: [`${p.model}_c`, p.model.replace(".vmdl", "_backup.vmdl_c")], warnings: ["WARNING: Unknown game data class CCitadelHeroModelGameData_t"], log: "OK: 1 compiled, 0 failed, 0 skipped" },
     };
   },

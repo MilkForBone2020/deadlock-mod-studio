@@ -323,9 +323,10 @@ function ModelEditor({
                 Sent {formatDate(latest.sent)} {new Date(latest.sent).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" })}:{" "}
                 {latest.objects.length} object(s), {latest.objects.reduce((n, o) => n + o.triangles, 0).toLocaleString()} triangles, parts{" "}
                 {[...new Set(latest.objects.map((o) => o.part))].join(", ")}
-                {latest.materialFiles?.some((m) => m.color)
-                  ? `; new textures for ${latest.materialFiles.filter((m) => m.color).map((m) => m.name).join(", ")}`
+                {latest.materialFiles?.some((m) => m.color && !m.new)
+                  ? `; new textures for ${latest.materialFiles.filter((m) => m.color && !m.new).map((m) => m.name).join(", ")}`
                   : ""}
+                {latest.materialFiles?.some((m) => m.new) ? `; new materials ${latest.materialFiles.filter((m) => m.new).map((m) => m.name).join(", ")}` : ""}
                 .
               </span>
               <span className="hint">Parts you changed get new meshes. Parts you didn't touch keep Valve's original files.</span>
@@ -490,9 +491,9 @@ function ModelReportModal({ r, heroName, close, goLibrary }: { r: ModelBuildResu
             {r.report.materials.map((m) => (
               <tr key={m.path}>
                 <td>{m.material}</td>
-                <td>Your colour texture</td>
+                <td>{m.new ? "New material (from the hero's main material)" : "Your colour texture"}</td>
                 <td>
-                  {m.size[0]}×{m.size[1]}
+                  {m.size[0] <= 4 && m.new ? "Plain colour" : `${m.size[0]}×${m.size[1]}`}
                   {m.resized ? " (resized to a power of two)" : ""}
                 </td>
               </tr>

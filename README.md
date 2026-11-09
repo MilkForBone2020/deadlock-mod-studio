@@ -135,12 +135,15 @@ cargo test -p modcore
 `blender/deadlock_mod_studio/` is a Blender extension (4.2 or newer, tested on 5.0). The app builds it in and installs it with Blender's own `blender --command extension install-file` the first time you use **Edit in Blender**. It:
 
 - imports the extracted hero, keeps a wireframe copy of the original, locks the original bones and saves a work file in the project's `blender` folder
-- adds a **Deadlock** tab to the 3D view's sidebar: assign objects to the hero's parts, pose the rig with a few of the hero's animations, and check the model (bones kept and unmoved, every vertex weighted, at most 4 bones per vertex, power-of-two textures, size within ±10% of the original)
+- adds a **Deadlock** tab to the 3D view's sidebar: assign objects to the hero's parts, pose the rig with a few of the hero's animations, and check the model (bones kept and unmoved, every vertex weighted, at most 4 bones per vertex, power-of-two textures, no more than 10% smaller or 40% taller than the original)
+- **Attach to head** / **Attach to bone…** makes a new object (a hat, a badge) follow one bone rigidly: it's parented to the rig, gets an Armature modifier and is weighted 1.0 to that bone, stays where you put it whatever the pose, and goes into the part that uses that bone most
 - **Send to app** exports the model and a manifest into the project's `return` folder
 
 When you build with your model, the app reads the returned glTF (`modcore/src/glb.rs`), moves each part back into the game's coordinates and writes its geometry into a copy of that part's original DMX (`modcore/src/meshswap.rs`, `modcore/src/dmx.rs`). The skeleton, cloth, hitboxes and settings stay Valve's, every detail level of a changed part uses your mesh, and parts that come back identical keep their original files.
 
 Repainted colour textures: the add-on records each material's colour image at import and sends any that changed. The app rebuilds that material at its original path from the extracted source (`modcore/src/material.rs`): Valve's hero shader and settings stay, the colour slot gets your image (resized to a power of two if needed, alpha dropped), and CSDK compiles it with the model.
+
+New materials: any material that isn't one of the hero's is made from the hero's main material (hero shader, outline, rim light and status effects kept) and written under `<model folder>/dms_materials/`. Its colour is your image, or the Principled Base Color when no image is plugged in; Roughness and Metallic values come across too. Textures drawn for the hero's UV layout (shadowing, metal, glow) are replaced with neutral CSDK defaults or flat colours, glow is turned off, and the hero's vertex-colour tint is ignored.
 
 At extract, faces Valve uses back to back (double-sided parts) are given their own vertices in the Blender file, because Blender drops a second face on the same three vertices.
 

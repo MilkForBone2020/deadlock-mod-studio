@@ -9,6 +9,6 @@ fn main() {
     let mut doc = modcore::kv3text::parse(&std::fs::read_to_string(&src).unwrap()).unwrap();
     let out = Path::new("/tmp/swapout");
     let _ = std::fs::remove_dir_all(out);
-    let r = modcore::model::apply_returned(&mut doc, proj, model, &proj.join("return").join(&a[2]), out).unwrap();
+    let r = modcore::model::apply_returned(&mut doc, proj, model, &proj.join("return").join(&a[2]), out, &Default::default()).unwrap();
     for p in r { println!("{} {} {} {}", p.part, p.status, p.vertices, p.triangles); }
 }
