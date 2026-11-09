@@ -117,7 +117,9 @@ fn find_compiled(game_root: &Path, stem: &str) -> Option<PathBuf> {
         .map(|e| e.path())
         .filter(|f| {
             let n = f.file_name().map(|n| n.to_string_lossy().to_lowercase()).unwrap_or_default();
-            n.ends_with(".vtex_c") && (n == format!("{name}.vtex_c") || n.starts_with(&format!("{name}_")))
+            // Exactly x.vtex_c or x_<image type>.vtex_c: "x_card" must not
+            // pick up "x_card_critical".
+            n == format!("{name}.vtex_c") || ["psd", "png", "tga", "jpg", "jpeg"].iter().any(|e| n == format!("{name}_{e}.vtex_c"))
         })
         .collect();
     found.sort();
@@ -240,19 +242,31 @@ mod tests {
         std::fs::write(csdk::compiler_path(&csdk), b"").unwrap();
         let src = t.path().join("me.png");
         RgbaImage::from_pixel(560, 760, image::Rgba([1, 2, 3, 255])).save(&src).unwrap();
-        let images = vec![("m_strIconHeroCard".to_string(), "file://{images}/heroes/unicorn_card.psd".to_string())];
-        let jobs = vec![IconJob { field: "m_strIconHeroCard".into(), source: src.display().to_string() }];
+        let images = vec![
+            ("m_strIconHeroCard".to_string(), "file://{images}/heroes/unicorn_card.psd".to_string()),
+            ("m_strIconHeroCardCritical".to_string(), "file://{images}/heroes/unicorn_card_critical.psd".to_string()),
+        ];
+        let low = t.path().join("low.png");
+        RgbaImage::from_pixel(560, 760, image::Rgba([9, 9, 9, 255])).save(&low).unwrap();
+        let jobs = vec![
+            IconJob { field: "m_strIconHeroCard".into(), source: src.display().to_string() },
+            IconJob { field: "m_strIconHeroCardCritical".into(), source: low.display().to_string() },
+        ];
         // Fake compiler: x.psd in content -> x_psd.vtex_c in game.
         let runner = |csdk: &Path, file: &Path| -> Result<(bool, String)> {
             let rel = file.strip_prefix(csdk.join("content")).unwrap();
             let out = csdk.join("game").join(rel).with_file_name(format!("{}_psd.vtex_c", file.file_stem().unwrap().to_string_lossy()));
             std::fs::create_dir_all(out.parent().unwrap()).unwrap();
-            std::fs::write(out, b"vtex").unwrap();
+            std::fs::write(out, file.display().to_string()).unwrap();
             Ok((true, "OK".into()))
         };
         let out = t.path().join("p.vpk");
         let r = build(&csdk, "Mono icons", &images, &jobs, &out, &runner, &|_| {}).unwrap();
-        assert_eq!(r.files, vec!["panorama/images/heroes/unicorn_card_psd.vtex_c"]);
+        assert_eq!(r.files, vec!["panorama/images/heroes/unicorn_card_critical_psd.vtex_c", "panorama/images/heroes/unicorn_card_psd.vtex_c"]);
         assert_eq!(vpk::list_files(&out).unwrap(), r.files);
+        // Each slot got its own picture (the fake compiler writes its source path).
+        let d = vpk::read_directory(&out).unwrap();
+        let card = String::from_utf8(d.extract(d.find("panorama/images/heroes/unicorn_card_psd.vtex_c").unwrap()).unwrap()).unwrap();
+        assert!(card.ends_with("unicorn_card.psd"), "{card}");
     }
 }
