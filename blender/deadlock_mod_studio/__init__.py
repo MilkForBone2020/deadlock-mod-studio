@@ -20,7 +20,7 @@ import bpy
 from bpy.props import EnumProperty, StringProperty
 from mathutils import Vector
 
-ADDON_VERSION = "0.1.3"
+ADDON_VERSION = "0.1.4"
 MAX_WEIGHTS = 4
 # Fairness rule: a custom model stays close to the original's size.
 SIZE_TOLERANCE = 0.10
@@ -549,6 +549,142 @@ class DMS_OT_select_unweighted(bpy.types.Operator):
         return {"FINISHED"}
 
 
+# Body regions by Valve's standard bone names (shared by every hero).
+REGIONS = {
+    "LEGS": ("leg_", "ankle_", "ball_", "knee", "foot", "toe"),
+    "ARMS": ("arm_", "hand_", "finger_", "clavicle_", "elbow", "wrist", "palm"),
+    "TORSO": ("spine_", "pelvis", "chest", "back", "belly", "waist"),
+    "HEAD": ("head", "neck_", "jaw", "eye", "mouth", "brow", "lip"),
+    "GUN": ("weapon", "gun", "muzzle", "barrel", "pump", "trigger", "mag"),
+}
+
+
+def region_of(bone):
+    b = bone.lower()
+    for region, prefixes in REGIONS.items():
+        if any(b.startswith(p) or p in b for p in prefixes):
+            return region
+    return ""
+
+
+def faces_in_region(obj, region):
+    """Indices of faces whose vertices mostly belong to bones of `region`."""
+    names = {g.index: g.name for g in obj.vertex_groups}
+    vert_region = []
+    for v in obj.data.vertices:
+        best, bw = "", 0.0
+        for g in v.groups:
+            if g.weight > bw and g.group in names:
+                best, bw = names[g.group], g.weight
+        vert_region.append(region_of(best) if best else "")
+    out = []
+    for p in obj.data.polygons:
+        hits = sum(1 for i in p.vertices if vert_region[i] == region)
+        if hits * 2 > len(p.vertices):
+            out.append(p.index)
+    return out
+
+
+def texture_users(scene=None):
+    """[(material, image, [object names])] for my model's textured materials."""
+    found = {}
+    for o in model_meshes(scene):
+        for slot in o.material_slots:
+            m = slot.material
+            img = base_color_image(m)
+            if img is None:
+                continue
+            found.setdefault(m.name, (m, img, []))[2].append(o.name)
+    return [found[k] for k in sorted(found)]
+
+
+class DMS_OT_paint_texture(bpy.types.Operator):
+    """Paint this texture: selects an object that uses it, switches to Texture Paint and makes it the paint canvas"""
+
+    bl_idname = "dms.paint_texture"
+    bl_label = "Paint texture"
+    material: StringProperty()
+
+    def execute(self, context):
+        mat = bpy.data.materials.get(self.material)
+        img = base_color_image(mat)
+        objs = [o for o in model_meshes(context.scene) if any(s.material == mat for s in o.material_slots)]
+        if not mat or not img or not objs:
+            return {"CANCELLED"}
+        obj = context.object if context.object in objs else objs[0]
+        if context.object and context.object.mode != "OBJECT":
+            bpy.ops.object.mode_set(mode="OBJECT")
+        for o in context.selected_objects:
+            o.select_set(False)
+        obj.hide_set(False)
+        obj.select_set(True)
+        context.view_layer.objects.active = obj
+        obj.active_material_index = next(i for i, s in enumerate(obj.material_slots) if s.material == mat)
+        for n in mat.node_tree.nodes:
+            if n.type == "TEX_IMAGE" and n.image == img:
+                mat.node_tree.nodes.active = n
+        bpy.ops.object.mode_set(mode="TEXTURE_PAINT")
+        ts = context.scene.tool_settings.image_paint
+        ts.mode = "MATERIAL"
+        for area in context.screen.areas if context.screen else []:
+            if area.type == "IMAGE_EDITOR":
+                area.spaces.active.image = img
+        self.report({"INFO"}, f"Painting {img.name} on {obj.name}")
+        return {"FINISHED"}
+
+
+class DMS_OT_edit_outside(bpy.types.Operator):
+    """Open this texture in the image editor set in Blender's preferences (File Paths). Save it there; Send to app picks up the change"""
+
+    bl_idname = "dms.edit_outside"
+    bl_label = "Edit outside"
+    material: StringProperty()
+
+    def execute(self, context):
+        img = base_color_image(bpy.data.materials.get(self.material))
+        if not img:
+            return {"CANCELLED"}
+        path = bpy.path.abspath(img.filepath)
+        if not os.path.isfile(path):
+            self.report({"ERROR"}, "This texture isn't a file on disk (re-import the project from the app)")
+            return {"CANCELLED"}
+        try:
+            bpy.ops.image.external_edit(filepath=path)
+        except RuntimeError as e:
+            self.report({"ERROR"}, f"{e}. Set an image editor in Preferences › File Paths, or open {path} yourself.")
+            return {"CANCELLED"}
+        return {"FINISHED"}
+
+
+class DMS_OT_paint_region(bpy.types.Operator):
+    """Paint only this region of the body (by bone weights), or everything"""
+
+    bl_idname = "dms.paint_region"
+    bl_label = "Paint region"
+    region: StringProperty()
+
+    def execute(self, context):
+        obj = context.object
+        if not obj or obj.type != "MESH":
+            self.report({"WARNING"}, "Select a mesh first (use Paint on a texture)")
+            return {"CANCELLED"}
+        mesh = obj.data
+        if self.region == "ALL":
+            mesh.use_paint_mask = False
+            return {"FINISHED"}
+        mode = obj.mode
+        if mode != "OBJECT":
+            bpy.ops.object.mode_set(mode="OBJECT")
+        faces = set(faces_in_region(obj, self.region))
+        for p in mesh.polygons:
+            p.select = p.index in faces
+        mesh.use_paint_mask = True
+        if mode != "OBJECT":
+            bpy.ops.object.mode_set(mode=mode)
+        self.report({"INFO"}, f"{len(faces)} faces in {self.region.lower()}" if faces else f"No {self.region.lower()} faces on {obj.name}")
+        return {"FINISHED"}
+
+
 class DMS_OT_toggle_reference(bpy.types.Operator):
     """Show or hide the original hero as a wireframe"""
 
@@ -760,6 +896,25 @@ class DMS_PT_main(bpy.types.Panel):
         for a in bpy.data.actions[:4]:
             row.operator("dms.pose", text=a.name.replace("primary_", "").replace("_", " ")).action = a.name
 
+        # Textures
+        box = layout.box()
+        box.label(text="Textures", icon="TEXTURE")
+        users = texture_users(scene)
+        if not users:
+            box.label(text="No textured materials")
+        for mat, img, objs in users:
+            col = box.column(align=True)
+            row = col.row(align=True)
+            row.label(text=f"{mat.name}: {', '.join(objs)}", icon="MATERIAL")
+            row = col.row(align=True)
+            row.operator("dms.paint_texture", text="Paint", icon="BRUSH_DATA").material = mat.name
+            row.operator("dms.edit_outside", text="Edit outside", icon="IMAGE").material = mat.name
+        if context.object and context.object.mode == "TEXTURE_PAINT":
+            box.label(text=f"Paint only ({context.object.name}):")
+            row = box.row(align=True)
+            for r, label in (("LEGS", "Legs"), ("ARMS", "Arms"), ("TORSO", "Torso"), ("HEAD", "Head"), ("GUN", "Gun"), ("ALL", "All")):
+                row.operator("dms.paint_region", text=label).region = r
+
         # Checks
         box = layout.box()
         row = box.row()
@@ -789,6 +944,9 @@ classes = (
     DMS_OT_check,
     DMS_OT_limit_weights,
     DMS_OT_select_unweighted,
+    DMS_OT_paint_texture,
+    DMS_OT_edit_outside,
+    DMS_OT_paint_region,
     DMS_OT_toggle_reference,
     DMS_OT_pose,
     DMS_OT_send,
