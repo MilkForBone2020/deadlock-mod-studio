@@ -20,7 +20,7 @@ import bpy
 from bpy.props import EnumProperty, StringProperty
 from mathutils import Vector
 
-ADDON_VERSION = "0.1.6"
+ADDON_VERSION = "0.1.7"
 MAX_WEIGHTS = 4
 # Fairness rule: a custom model stays close to the original's size. Smaller
 # is the unfair direction; accessories that stick out make you easier to see.
@@ -331,6 +331,32 @@ def material_images(mat):
     return [n.image for n in mat.node_tree.nodes if n.type == "TEX_IMAGE" and n.image]
 
 
+def signed_volume(obj):
+    """Volume of a mesh; negative when its faces point inward (inside out)."""
+    me = obj.data
+    v = [x.co for x in me.vertices]
+    total = 0.0
+    for p in me.polygons:
+        idx = p.vertices
+        for k in range(1, len(idx) - 1):
+            total += v[idx[0]].dot(v[idx[k]].cross(v[idx[k + 1]])) / 6.0
+    if obj.matrix_world.determinant() < 0:
+        total = -total
+    return total
+
+
+def fix_normals(obj):
+    """Point every face outward (Blender's Recalculate Outside)."""
+    import bmesh
+
+    bm = bmesh.new()
+    bm.from_mesh(obj.data)
+    bmesh.ops.recalc_face_normals(bm, faces=bm.faces)
+    bm.to_mesh(obj.data)
+    bm.free()
+    obj.data.update()
+
+
 def weight_stats(obj, bone_names):
     """(unweighted vertices, vertices over the limit, groups that aren't bones)."""
     idx_to_name = {g.index: g.name for g in obj.vertex_groups}
@@ -397,6 +423,8 @@ def run_checks(scene=None):
             issues.append(Issue("error", f"{o.name}: {over} vertices use more than {MAX_WEIGHTS} bones", "limit_weights", o.name))
         if stray:
             issues.append(Issue("warn", f"{o.name}: vertex groups that aren't bones are ignored ({', '.join(stray[:3])})"))
+        if o.name.split(".")[0] not in parts and signed_volume(o) < 0:
+            issues.append(Issue("error", f"{o.name}: faces point inward (inside out). The game hides back faces, so you'd see through it", "fix_normals", o.name))
         tris += sum(len(p.vertices) - 2 for p in o.data.polygons)
         if not o.material_slots or not any(s.material for s in o.material_slots):
             issues.append(Issue("error", f"{o.name}: has no material (add one in the Material tab)", "", o.name))
@@ -513,6 +541,8 @@ def attach_to_bone(obj, arm, bone_name, scene=None):
     if obj.data.users > 1:
         obj.data = obj.data.copy()
     obj.data.transform(to_rest, shape_keys=True)
+    if to_rest.determinant() < 0:
+        obj.data.flip_normals()  # a mirrored object would come out inside out
     obj.parent = arm
     obj.parent_type = "OBJECT"
     obj.matrix_parent_inverse.identity()
@@ -639,6 +669,29 @@ class DMS_OT_limit_weights(bpy.types.Operator):
         n = limit_weights(obj, {b.name for b in arm.data.bones})
         store_issues(context.scene, run_checks(context.scene))
         self.report({"INFO"}, f"Fixed {n} vertices on {obj.name}")
+        return {"FINISHED"}
+
+
+class DMS_OT_fix_normals(bpy.types.Operator):
+    """Make this object's faces point outward (Recalculate Outside)"""
+
+    bl_idname = "dms.fix_normals"
+    bl_label = "Fix normals"
+    bl_options = {"REGISTER", "UNDO"}
+    target: StringProperty()
+
+    def execute(self, context):
+        obj = bpy.data.objects.get(self.target)
+        if not obj or obj.type != "MESH":
+            return {"CANCELLED"}
+        mode = obj.mode
+        if mode != "OBJECT":
+            bpy.ops.object.mode_set(mode="OBJECT")
+        fix_normals(obj)
+        if signed_volume(obj) < 0:
+            obj.data.flip_normals()
+        store_issues(context.scene, run_checks(context.scene))
+        self.report({"INFO"}, f"{obj.name}: faces point outward")
         return {"FINISHED"}
 
 
@@ -1071,7 +1124,7 @@ class DMS_PT_main(bpy.types.Panel):
                 row = box.row()
                 row.label(text=i.text, icon=icon[i.level])
                 if i.fix:
-                    label = {"limit_weights": "Fix", "select_unweighted": "Select"}[i.fix]
+                    label = {"limit_weights": "Fix", "select_unweighted": "Select", "fix_normals": "Fix"}[i.fix]
                     row.operator(f"dms.{i.fix}", text=label).target = i.target
 
         layout.separator()
@@ -1087,6 +1140,7 @@ classes = (
     DMS_OT_check,
     DMS_OT_limit_weights,
     DMS_OT_select_unweighted,
+    DMS_OT_fix_normals,
     DMS_OT_paint_texture,
     DMS_OT_edit_outside,
     DMS_OT_paint_region,
