@@ -275,10 +275,21 @@ def rigid_delta(pose, rest):
     return m @ r.inverted()
 
 
-def fit_to_hero(meshes, hero, hero_meshes, scene=None):
+# Body parts kept exactly as modelled in "keep shape" mode (only scaled).
+TORSO = {"hips", "spine1", "spine2", "spine3", "neck", "neck2", "head", "shoulder"}
+
+
+def fit_to_hero(meshes, hero, hero_meshes, scene=None, mode="SHAPE"):
     """Fit `meshes` (rigged to their own armatures) onto `hero`. Returns a
-    report dict. `hero_meshes`: the hero's original meshes, for its height."""
-    report = {"mapped": [], "followers": {}, "unused": [], "scale": 1.0, "turned": False}
+    report dict. `hero_meshes`: the hero's original meshes, for its height.
+
+    mode "SHAPE": keep the model's own shape and proportions. It's scaled to
+    the hero's height; the torso, neck and head stay as they are; arms,
+    legs, hands, feet and fingers only turn (at their own joints) to the
+    hero's rest pose.
+    mode "SKELETON": move every joint onto the hero's; limbs take the
+    hero's lengths."""
+    report = {"mapped": [], "followers": {}, "unused": [], "scale": 1.0, "turned": False, "mode": mode}
     arms = model_armatures(meshes)
     if not arms:
         raise RuntimeError("The model isn't rigged: its meshes have no Armature modifier")
@@ -381,9 +392,12 @@ def fit_to_hero(meshes, hero, hero_meshes, scene=None):
     followers = {n: leader_of(n) for n in bones if n not in mapped}
     report["followers"] = followers
 
-    # Pose: matched bones onto the hero's joints.
+    role_of = {roles[k]: k for k in roles}
     poses = {}
-    for n, seg in mapped.items():
+    if mode == "SHAPE":
+        poses = shape_poses(fit_data, mapped, role_of, src)
+    # Pose: matched bones onto the hero's joints.
+    for n, seg in (mapped.items() if mode != "SHAPE" else []):
         rest = fit_data.bones[n].matrix_local.copy()
         rest_dir = (rest.to_3x3() @ Vector((0, 1, 0))).normalized()
         length = fit_data.bones[n].length
@@ -419,6 +433,15 @@ def fit_to_hero(meshes, hero, hero_meshes, scene=None):
         if old.users == 0:
             bpy.data.meshes.remove(old)
 
+    if mode == "SHAPE":
+        # Turning the feet to the hero's (heels, say) moves the soles: stand
+        # the model back on the ground.
+        lo2, _ = mesh_height(meshes)
+        lift = Matrix.Translation((0, 0, hlo - lo2))
+        for o in meshes:
+            o.data.transform(lift)
+        report["lift"] = hlo - lo2
+
     # Weights onto the hero's bones.
     target = {n: seg.weight for n, seg in mapped.items()}
     for n, lead in followers.items():
@@ -434,6 +457,53 @@ def fit_to_hero(meshes, hero, hero_meshes, scene=None):
     bpy.data.armatures.remove(fit_data)
     report["unused"] = sorted(k for k in pts if k not in {seg.weight for seg in segs.values()})
     return report
+
+
+def shape_poses(fit_data, mapped, role_of, src):
+    """Keep-shape poses: torso bones stay put; every limb bone turns about
+    its own (carried) head to point the way the hero's bone does, without
+    stretching. Parents first, so each bone rides on its parent's turn."""
+    def mapped_parent(n):
+        b = src[n]["bone"].parent
+        while b is not None:
+            if b.name in mapped and b.name != n:
+                return b.name
+            c = canonical(b.name)
+            for m, k in role_of.items():
+                # (Rigify: ORG-palm.01 is the parent of DEF-palm.01 itself.)
+                if k == c and m in mapped and m != n:
+                    return m
+            b = b.parent
+        return None
+
+    poses = {}
+
+    def pose(n, seen=()):
+        """Pose of `n`, its matched parent's first (Rigify's palms and
+        fingers sit at the same depth, so plain depth order isn't enough)."""
+        if n in poses:
+            return poses[n]
+        seg = mapped[n]
+        rest = fit_data.bones[n].matrix_local.copy()
+        parent = mapped_parent(n)
+        if parent is not None and parent not in seen:
+            carry = rigid_delta(pose(parent, seen + (n,)), fit_data.bones[parent].matrix_local)
+        else:
+            carry = Matrix.Identity(4)
+        carried = carry @ rest
+        key = role_of.get(n, ("", ""))[0]
+        if key in TORSO or seg.tail is None or (seg.tail - seg.head).length < 1e-6:
+            poses[n] = carried
+            return carried
+        cur_dir = (carried.to_3x3() @ Vector((0, 1, 0))).normalized()
+        new_dir = (seg.tail - seg.head).normalized()
+        rot = cur_dir.rotation_difference(new_dir).to_matrix() @ carried.to_3x3()
+        poses[n] = Matrix.Translation(carried.translation) @ rot.to_4x4()
+        return poses[n]
+
+    for n in mapped:
+        pose(n)
+    return poses
 
 
 def remap_weights(obj, target, limit=4):

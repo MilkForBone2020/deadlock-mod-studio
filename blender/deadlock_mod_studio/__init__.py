@@ -22,7 +22,7 @@ from bpy.props import EnumProperty, StringProperty
 from . import fit
 from mathutils import Vector
 
-ADDON_VERSION = "0.1.8"
+ADDON_VERSION = "0.1.9"
 MAX_WEIGHTS = 4
 # Fairness rule: a custom model stays close to the original's size. Smaller
 # is the unfair direction; accessories that stick out make you easier to see.
@@ -733,7 +733,7 @@ class DMS_OT_fit_import(bpy.types.Operator):
         return {"FINISHED"}
 
 
-def run_fit(scene, into_part, replace):
+def run_fit(scene, into_part, replace, mode="SHAPE"):
     """Fit the incoming model onto the hero; replaced hero parts are switched
     off. Returns the report."""
     arm = rig(scene)
@@ -745,7 +745,7 @@ def run_fit(scene, into_part, replace):
     refs = reference_by_part()
     height_from = [refs[p] for p in replace if p in refs] or [o for p in replace for o in parts.get(p, [])]
     old_arms = fit.model_armatures(meshes)
-    report = fit.fit_to_hero(meshes, arm, height_from, scene)
+    report = fit.fit_to_hero(meshes, arm, height_from, scene, mode)
     model = bpy.data.collections[MODEL_COLLECTION]
     for o in meshes:
         for c in list(o.users_collection):
@@ -791,6 +791,14 @@ class DMS_OT_fit_to_hero(bpy.types.Operator):
         return [(p, p, "") for p in part_names(load_project(context.scene))] or [("", "No project", "")]
 
     into_part: EnumProperty(name="Put it in", items=part_items)
+    mode: EnumProperty(
+        name="Fit",
+        items=[
+            ("SHAPE", "Keep my model's shape", "Scale to the hero's height; torso and head stay as modelled; arms and legs only turn to the hero's pose"),
+            ("SKELETON", "Match the hero's skeleton", "Move every joint onto the hero's: limbs take the hero's lengths (best for realistic proportions)"),
+        ],
+        default="SHAPE",
+    )
     replace: EnumProperty(name="Switch off", items=part_items, options={"ENUM_FLAG"})
 
     def invoke(self, context, event):
@@ -806,6 +814,7 @@ class DMS_OT_fit_to_hero(bpy.types.Operator):
 
     def draw(self, context):
         col = self.layout.column()
+        col.prop(self, "mode")
         col.prop(self, "into_part")
         col.label(text="Switch off the hero's own parts:")
         col.prop(self, "replace")
@@ -817,7 +826,7 @@ class DMS_OT_fit_to_hero(bpy.types.Operator):
         if context.object and context.object.mode != "OBJECT":
             bpy.ops.object.mode_set(mode="OBJECT")
         try:
-            r = run_fit(context.scene, self.into_part, set(self.replace))
+            r = run_fit(context.scene, self.into_part, set(self.replace), self.mode)
         except RuntimeError as e:
             self.report({"ERROR"}, str(e))
             return {"CANCELLED"}
