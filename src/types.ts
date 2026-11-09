@@ -234,3 +234,20 @@ export interface Returned {
   materials: string[];
   materialFiles?: { name: string; color: string | null; new?: boolean }[];
 }
+
+export interface PreviewMaterial {
+  outline: [number, number, number] | null;
+  glow: { tint: [number, number, number]; scale: number; mask: string | null } | null;
+  color: string | null;
+  ao: string | null;
+  metal: string | null;
+  roughness: number | null;
+  isNew: boolean;
+}
+
+export interface PreviewInfo {
+  model: string;
+  sent: string | null;
+  original: string;
+  materials: Record<string, PreviewMaterial>;
+}

@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { ApplyReport, BlenderInstall, Returned, BuildResult, ExtractResult, HeroInfo, Level, ModelBuildResult, ModelHero, ModelProject, ModelSummary, ModMeta, Overview, Profile, SafeModeEvent, SoundProject, SoundSearch, SoundUse } from "./types";
+import type { ApplyReport, BlenderInstall, Returned, BuildResult, ExtractResult, HeroInfo, Level, ModelBuildResult, ModelHero, ModelProject, ModelSummary, ModMeta, PreviewInfo, Overview, Profile, SafeModeEvent, SoundProject, SoundSearch, SoundUse } from "./types";
 import { mockApi } from "./mock";
 
 /** False when the UI is opened in a plain browser (`npm run dev`) for design work. */
@@ -57,6 +57,8 @@ const tauriApi = {
   setBlenderExe: (path: string) => invoke<void>("set_blender_exe", { path }),
   editInBlender: (id: string, fresh = false) => invoke<string>("edit_in_blender", { id, fresh }),
   modelReturns: (id: string) => invoke<Returned[]>("model_returns", { id }),
+  modelPreviewInfo: (id: string, original = false) => invoke<PreviewInfo>("model_preview_info", { id, original }),
+  modelPreviewFile: (id: string, path: string) => invoke<ArrayBuffer>("model_preview_file", { id, path }),
 };
 
 export type Api = typeof tauriApi;

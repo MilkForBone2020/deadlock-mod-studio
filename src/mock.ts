@@ -325,4 +325,20 @@ export const mockApi: Api = {
     sentBack
       ? [{ folder: "x", sent: now(), blender: "5.0.0", addon: "0.1.0", glb: "model.glb", objects: [{ object: "outer_costume", part: "outer_costume", triangles: 107910 }, { object: "gun", part: "gun", triangles: 32803 }], materials: ["gigawatt_prisoner"], materialFiles: [{ name: "gigawatt_prisoner", color: "textures/gigawatt_prisoner_color.png" }] }]
       : [],
+  // Dev only: put model.glb, original.glb and textures in public/dev-preview/
+  // (not committed) to try the preview in a browser.
+  modelPreviewInfo: async (_id, original = false) => ({
+    model: original || !sentBack ? "original.glb" : "model.glb",
+    sent: original || !sentBack ? null : now(),
+    original: "original.glb",
+    materials: {
+      gigawatt_prisoner: { outline: [0.063, 0.02, 0.02], glow: { tint: [0.75, 0.38, 0.04], scale: 10, mask: "gigawatt_prisoner_emissive.png" }, color: "gigawatt_prisoner_color_png_288151fd.png", ao: "gigawatt_prisoner_ao.png", metal: "gigawatt_prisoner_288151fd_metal.png", roughness: 0.97, isNew: false },
+      Top_Hat_Test: { outline: [0.063, 0.02, 0.02], glow: null, color: null, ao: null, metal: null, roughness: 1, isNew: true },
+    },
+  }),
+  modelPreviewFile: async (_id, path) => {
+    const r = await fetch(`/dev-preview/${path.split(/[\\/]/).pop()}`);
+    if (!r.ok) throw new Error(`No ${path} in public/dev-preview`);
+    return r.arrayBuffer();
+  },
 };

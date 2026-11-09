@@ -16,6 +16,7 @@ pub mod library;
 pub mod material;
 pub mod meshswap;
 pub mod model;
+pub mod preview;
 pub mod steam;
 pub mod sync;
 pub mod tools;

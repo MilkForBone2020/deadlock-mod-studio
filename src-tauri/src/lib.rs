@@ -900,6 +900,31 @@ fn model_returns(app: State<App>, id: String) -> Vec<Returned> {
     blender::returned(&lib.model_dir(&id).join("return"))
 }
 
+/// What the 3D preview loads: the latest model from Blender (or the
+/// original) and each material's look settings.
+#[tauri::command]
+fn model_preview_info(app: State<App>, id: String, original: bool) -> CmdResult<modcore::preview::PreviewInfo> {
+    let lib = app.lib.lock().unwrap();
+    let project = lib.model_project(&id).map_err(err)?.clone();
+    let dir = lib.model_dir(&id);
+    let summary: ModelSummary = serde_json::from_slice(&std::fs::read(dir.join("summary.json")).map_err(|_| "Extract the hero first".to_string())?).map_err(|e| e.to_string())?;
+    let latest = if original { None } else { blender::returned(&dir.join("return")).into_iter().next().map(|r| PathBuf::from(r.folder)) };
+    modcore::preview::info(&dir, &project.model, &summary.materials, latest.as_deref()).map_err(err)
+}
+
+/// A file for the preview (a glTF or a texture), as raw bytes. Only files
+/// inside the project's own folders.
+#[tauri::command]
+fn model_preview_file(app: State<App>, id: String, path: String) -> CmdResult<tauri::ipc::Response> {
+    let dir = app.lib.lock().unwrap().model_dir(&id);
+    let p = PathBuf::from(&path);
+    let p = if p.is_absolute() { p } else { path.split('/').fold(dir.join("original"), |a, s| a.join(s)) };
+    if !modcore::preview::allowed_file(&dir, &p) {
+        return Err("That file isn't part of this project".into());
+    }
+    std::fs::read(&p).map(tauri::ipc::Response::new).map_err(|e| e.to_string())
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct ModelBuildResult {
@@ -1033,6 +1058,8 @@ pub fn run() {
             set_blender_exe,
             edit_in_blender,
             model_returns,
+            model_preview_info,
+            model_preview_file,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Deadlock Mod Studio");

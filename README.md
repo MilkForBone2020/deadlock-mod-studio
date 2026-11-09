@@ -145,6 +145,8 @@ Repainted colour textures: the add-on records each material's colour image at im
 
 New materials: any material that isn't one of the hero's is made from the hero's main material (hero shader, outline, rim light and status effects kept) and written under `<model folder>/dms_materials/`. Its colour is your image, or the Principled Base Color when no image is plugged in; Roughness and Metallic values come across too. Textures drawn for the hero's UV layout (shadowing, metal, glow) are replaced with neutral CSDK defaults or flat colours, glow is turned off, and the hero's vertex-colour tint is ignored.
 
+Preview: the Model Builder's **Preview** button shows the latest model sent from Blender (or the original) in a 3D view with Seven's animations, drawn roughly like the game (`src/preview3d.ts`): banded lighting, the material's solid outline colour, rim light, the shadowing and glow maps, and front faces only, so see-through spots show as they would in game. *Original beside it* adds Valve's model for comparison. Look settings come from the extracted materials (`modcore/src/preview.rs`). It has no map lighting, fog or post-processing.
+
 At extract, faces Valve uses back to back (double-sided parts) are given their own vertices in the Blender file, because Blender drops a second face on the same three vertices.
 
 You can also install it by hand: zip the folder's two files and use Blender's *Install from Disk*.

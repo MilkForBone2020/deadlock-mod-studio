@@ -1,8 +1,10 @@
-import { useEffect, useState } from "react";
+import { lazy, Suspense, useEffect, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { api, errorText, isTauri } from "./api";
 import type { ModelBuildResult, ModelHero, ModelProject, ModelSummary, Overview, Returned } from "./types";
 import { formatDate, formatSize, Icon, Modal } from "./ui";
+// three.js is big: load the preview only when it opens.
+const ModelPreview = lazy(() => import("./ModelPreview").then((m) => ({ default: m.ModelPreview })));
 
 type Act = (fn: () => Promise<unknown>, ok?: string) => Promise<boolean>;
 
@@ -148,6 +150,7 @@ function ModelEditor({
   const [result, setResult] = useState<ModelBuildResult | null>(null);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [returns, setReturns] = useState<Returned[]>([]);
+  const [preview, setPreview] = useState(false);
 
   useEffect(() => {
     if (!p.extracted) return setSummary(null);
@@ -345,6 +348,9 @@ function ModelEditor({
             </span>
           </div>
           <div className="row-actions">
+            <button className="btn" disabled={!p.extracted || !!busy} onClick={() => setPreview(true)} title="See the model in 3D, lit roughly like the game, without starting Deadlock">
+              <Icon name="cube" size={14} /> Preview
+            </button>
             {latest && (
               <button className="btn ghost" disabled={!p.extracted || !ov.csdkFound || !!busy || outdated} onClick={() => build(false)} title="Rebuild the original model instead">
                 Original
@@ -356,6 +362,12 @@ function ModelEditor({
           </div>
         </li>
       </ol>
+
+      {preview && (
+        <Suspense fallback={null}>
+          <ModelPreview projectId={p.id} heroName={heroName} onClose={() => setPreview(false)} />
+        </Suspense>
+      )}
 
       {summary && <SummaryCard s={summary} heroName={heroName} openSource={() => act(() => api.openModelFolder(p.id, "original"))} />}
 
