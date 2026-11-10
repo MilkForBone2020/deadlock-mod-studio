@@ -22,7 +22,7 @@ from bpy.props import EnumProperty, IntProperty, StringProperty
 from . import fit, physics
 from mathutils import Vector
 
-ADDON_VERSION = "0.1.16"
+ADDON_VERSION = "0.1.17"
 MAX_WEIGHTS = 4
 # Fairness rule: a custom model stays close to the original's size. Smaller
 # is the unfair direction; accessories that stick out make you easier to see.
@@ -328,6 +328,29 @@ def save_image_copy(img, path):
         bpy.data.images.remove(out)
 
 
+MAX_TEXTURE = 2048  # a hero's own body textures are 2048
+
+
+def shrunk_size(w, h, limit=MAX_TEXTURE):
+    """Power-of-two size with the longest side at most `limit`, same shape."""
+    nw, nh = pow2_near(w), pow2_near(h)
+    while max(nw, nh) > limit:
+        nw, nh = max(4, nw // 2), max(4, nh // 2)
+    return nw, nh
+
+
+def shrink_image(img, limit=MAX_TEXTURE):
+    """Resize an image in Blender (not the file on disk). Returns the new size or None."""
+    w, h = img.size
+    if not w or not h:
+        return None
+    nw, nh = shrunk_size(w, h, limit)
+    if (nw, nh) == (w, h) or max(pow2_near(w), pow2_near(h)) <= limit:
+        return None
+    img.scale(nw, nh)
+    return nw, nh
+
+
 def pow2_near(n):
     """The power of two the app resizes a side to (nearest, 4 to 4096)."""
     up = 1 << max(0, (n - 1).bit_length())
@@ -463,11 +486,11 @@ def run_checks(scene=None):
         # two); other maps (normal, roughness...) aren't used yet.
         img = base_color_image(bpy.data.materials.get(m))
         w, h = img.size if img else (0, 0)
-        if w and h and not (is_pow2(w) and is_pow2(h)):
-            nw, nh = pow2_near(w), pow2_near(h)
+        nw, nh = (pow2_near(w), pow2_near(h)) if w and h else (0, 0)
+        if max(nw, nh) > MAX_TEXTURE:
+            issues.append(Issue("warn", f"Texture {img.name} would be {nw}×{nh} in game: costly. Shrink to {'×'.join(map(str, shrunk_size(w, h)))}", "shrink_texture", img.name))
+        elif w and h and not (is_pow2(w) and is_pow2(h)):
             issues.append(Issue("info", f"Texture {img.name} is {w}×{h}: the app resizes it to {nw}×{nh} (powers of two)"))
-        elif max(w, h) > 4096:
-            issues.append(Issue("warn", f"Texture {img.name} is {w}×{h}: over 4096 costs a lot of memory"))
         others = [i.name for i in material_images(bpy.data.materials.get(m)) if i != img]
         if others:
             issues.append(Issue("info", f"Material {m}: only the colour texture is used for now ({', '.join(others[:2])} left out)"))
@@ -1050,6 +1073,27 @@ class DMS_OT_fix_normals(bpy.types.Operator):
         return {"FINISHED"}
 
 
+class DMS_OT_shrink_texture(bpy.types.Operator):
+    """Shrink this texture to 2048 (in Blender only: the file on disk stays as it is). Send to app picks up the smaller copy"""
+
+    bl_idname = "dms.shrink_texture"
+    bl_label = "Shrink texture"
+    bl_options = {"REGISTER", "UNDO"}
+    target: StringProperty()
+
+    def execute(self, context):
+        imgs = [bpy.data.images.get(self.target)] if self.target else [base_color_image(m) for m in {s.material for o in model_meshes(context.scene) for s in o.material_slots if s.material}]
+        done = []
+        for img in imgs:
+            if img is not None:
+                size = shrink_image(img)
+                if size:
+                    done.append(f"{img.name} → {size[0]}×{size[1]}")
+        store_issues(context.scene, run_checks(context.scene))
+        self.report({"INFO"}, ("Shrunk " + ", ".join(done)) if done else "Nothing over 2048 to shrink")
+        return {"FINISHED"}
+
+
 class DMS_OT_select_unweighted(bpy.types.Operator):
     """Select the vertices that aren't weighted to any bone"""
 
@@ -1487,6 +1531,8 @@ class DMS_PT_main(bpy.types.Panel):
         users = texture_users(scene)
         if not users:
             box.label(text="No textured materials")
+        elif any(max(pow2_near(img.size[0]), pow2_near(img.size[1])) > MAX_TEXTURE for _, img, _ in users if img.size[0]):
+            box.operator("dms.shrink_texture", text="Shrink large textures", icon="FULLSCREEN_EXIT").target = ""
         for mat, img, objs in users:
             col = box.column(align=True)
             row = col.row(align=True)
@@ -1515,7 +1561,7 @@ class DMS_PT_main(bpy.types.Panel):
                 row = box.row()
                 row.label(text=i.text, icon=icon[i.level])
                 if i.fix:
-                    label = {"limit_weights": "Fix", "select_unweighted": "Select", "fix_normals": "Fix"}[i.fix]
+                    label = {"limit_weights": "Fix", "select_unweighted": "Select", "fix_normals": "Fix", "shrink_texture": "Shrink"}[i.fix]
                     row.operator(f"dms.{i.fix}", text=label).target = i.target
 
         layout.separator()
@@ -1537,6 +1583,7 @@ classes = (
     DMS_OT_check,
     DMS_OT_limit_weights,
     DMS_OT_select_unweighted,
+    DMS_OT_shrink_texture,
     DMS_OT_fix_normals,
     DMS_OT_paint_texture,
     DMS_OT_edit_outside,
