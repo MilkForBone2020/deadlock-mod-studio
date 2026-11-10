@@ -589,6 +589,7 @@ def fit_to_hero(meshes, hero, hero_meshes, scene=None, mode="SHAPE", physics="SE
         m = Matrix.Translation(seg.head) @ rot.to_4x4() @ Matrix.Diagonal((1.0, stretch, 1.0, 1.0))
         poses[n] = m
     twists = {}
+    by_role_j = {role_of[m]: m for m in mapped if m in role_of}
     for n, lead in followers.items():
         rest = fit_data.bones[n].matrix_local.copy()
         if lead is None:
@@ -606,12 +607,62 @@ def fit_to_hero(meshes, hero, hero_meshes, scene=None, mode="SHAPE", physics="SE
         fit.pose.bones[n].matrix = m
     view.update()
 
+    # Elbows and knees: the model's weights may switch from the upper to the
+    # lower bone over a very short distance, which folds into a crease as
+    # soon as the joint bends more than it was modelled (the hero's rest pose
+    # bends it). Blend them smoothly over a short stretch around the joint.
+    def blend_joint(up, low):
+        bu, bl = fit_data.bones[up], fit_data.bones[low]
+        joint = bl.head_local
+        axis = ((bu.tail_local - bu.head_local).normalized() + (bl.tail_local - bl.head_local).normalized()).normalized()
+        r = 0.18 * min(bu.length, bl.length)
+        reach = 0.6 * min(bu.length, bl.length)
+        ups, lows = [up] + twists.get(up, []), [low] + twists.get(low, [])
+        n_done = 0
+        for o in meshes:
+            gi = {g.name: g.index for g in o.vertex_groups}
+            if up not in gi and low not in gi:
+                continue
+            gu = o.vertex_groups.get(up) or o.vertex_groups.new(name=up)
+            gl = o.vertex_groups.get(low) or o.vertex_groups.new(name=low)
+            idx_u = {gi[g] for g in ups if g in gi}
+            idx_l = {gi[g] for g in lows if g in gi}
+            extra = [o.vertex_groups[g] for g in ups[1:] + lows[1:] if g in gi]
+            for v in o.data.vertices:
+                p = o.matrix_world @ v.co
+                x = (p - joint).dot(axis)
+                if abs(x) >= r or ((p - joint) - axis * x).length > reach:
+                    continue
+                su = sum(g.weight for g in v.groups if g.group in idx_u)
+                sl = sum(g.weight for g in v.groups if g.group in idx_l)
+                tot = su + sl
+                if tot < 0.5:
+                    continue
+                t = (x / r + 1.0) / 2.0
+                t = t * t * (3.0 - 2.0 * t)
+                for g in extra:
+                    g.remove([v.index])
+                gu.add([v.index], tot * (1.0 - t), "REPLACE")
+                gl.add([v.index], tot * t, "REPLACE")
+                n_done += 1
+        return n_done
+    blended = 0
+    for sd in SIDES:
+        for upk, lowk in (("upperarm", "forearm"), ("thigh", "shin")):
+            up = by_role_j.get((upk + "2", sd)) or by_role_j.get((upk, sd))
+            low = by_role_j.get((lowk, sd))
+            if up in mapped and low in mapped:
+                blended += blend_joint(up, low)
+    if blended:
+        report["joints_blended"] = blended
+
     # A stretched limb bone stretches every vertex weighted to it, even past
     # its end (a shoe partly on the shin is dragged to the floor): weight
     # past the end goes to the next part (hand, foot), which keeps its shape.
     by_role_m = {role_of[m]: m for m in mapped if m in role_of}
-    NEXT = {"upperarm": ("upperarm2", "forearm"), "upperarm2": ("forearm",), "forearm": ("forearm2", "hand"), "forearm2": ("hand",),
-            "thigh": ("thigh2", "shin"), "thigh2": ("shin",), "shin": ("shin2", "foot"), "shin2": ("foot",)}
+    # (Only into hands and feet: elbows and knees are blended above, and a
+    # hand-over there would make half the upper arm follow the forearm.)
+    NEXT = {"forearm": ("forearm2", "hand"), "forearm2": ("hand",), "shin": ("shin2", "foot"), "shin2": ("foot",)}
     moved = 0
     for n in mapped:
         key, side = role_of.get(n, ("", ""))
@@ -831,16 +882,20 @@ def shape_poses(fit_data, mapped, role_of, src, fit_limbs=False):
 
 def inline(bone, lead):
     """Whether `bone` lies along `lead` (a twist bone on a limb segment):
-    within its length, close to its line, pointing the same way."""
+    on its line, parallel, overlapping it (Auto-Rig Pro's twist bones can
+    start well before the limb bone and run past its end)."""
     a, t = lead.head_local, lead.tail_local
     ab = t - a
     L = ab.length
     if L < 1e-6:
         return False
-    u = (bone.head_local - a).dot(ab) / (L * L)
-    off = ((bone.head_local - a) - ab * u).length
-    same_way = (bone.tail_local - bone.head_local).normalized().dot(ab.normalized()) > 0.9 if bone.length > 1e-6 else True
-    return -0.05 <= u <= 1.05 and off <= 0.25 * L and same_way
+    def at(p):
+        return (p - a).dot(ab) / (L * L), ((p - a) - ab * ((p - a).dot(ab) / (L * L))).length
+    u0, off0 = at(bone.head_local)
+    u1, off1 = at(bone.tail_local)
+    parallel = bone.length < 1e-6 or abs((bone.tail_local - bone.head_local).normalized().dot(ab.normalized())) > 0.95
+    overlaps = min(u0, u1) < 1.0 and max(u0, u1) > 0.0
+    return parallel and overlaps and max(off0, off1) <= 0.25 * L
 
 
 # Each body part's parent (nearest first), for rigs whose deform bones are
