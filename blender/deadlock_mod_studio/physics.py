@@ -164,6 +164,11 @@ def make_chain(obj, rig, name, parent, count, preset, scene=None):
             groups[k + 1].add([i], f, "REPLACE")
         else:
             groups[k].add([i], 1.0, "REPLACE")
+    # Groups left empty by the move (old bones' groups) go.
+    used = {g.group for v in obj.data.vertices for g in v.groups if g.weight > 0}
+    for g in list(obj.vertex_groups):
+        if g.index not in used and g.name not in names and g.name not in rig.data.bones:
+            obj.vertex_groups.remove(g)
     if not any(m.type == "ARMATURE" and m.object == rig for m in obj.modifiers):
         obj.modifiers.new("Armature", "ARMATURE").object = rig
 

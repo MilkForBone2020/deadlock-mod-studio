@@ -22,7 +22,7 @@ from bpy.props import EnumProperty, IntProperty, StringProperty
 from . import fit, physics
 from mathutils import Vector
 
-ADDON_VERSION = "0.1.15"
+ADDON_VERSION = "0.1.16"
 MAX_WEIGHTS = 4
 # Fairness rule: a custom model stays close to the original's size. Smaller
 # is the unfair direction; accessories that stick out make you easier to see.
@@ -328,6 +328,13 @@ def save_image_copy(img, path):
         bpy.data.images.remove(out)
 
 
+def pow2_near(n):
+    """The power of two the app resizes a side to (nearest, 4 to 4096)."""
+    up = 1 << max(0, (n - 1).bit_length())
+    down = up // 2
+    return max(4, min(4096, down if down >= 1 and n - down < up - n else up))
+
+
 def is_pow2(n):
     return n > 0 and (n & (n - 1)) == 0
 
@@ -452,12 +459,18 @@ def run_checks(scene=None):
         missing = base_color_image(bpy.data.materials.get(m)) if not hero_material(m, scene) else None
         if missing is not None and (missing.size[0] == 0 or missing.size[1] == 0):
             issues.append(Issue("error", f"Material {m}: its image {missing.name} is missing. Open it again in the Image Editor (Image › Replace)"))
-        for img in material_images(bpy.data.materials.get(m)):
-            w, h = img.size
-            if w and h and not (is_pow2(w) and is_pow2(h)):
-                issues.append(Issue("error", f"Texture {img.name} is {w}×{h}: sizes must be powers of two (512, 1024, 2048…)"))
-            elif max(w, h) > 4096:
-                issues.append(Issue("warn", f"Texture {img.name} is {w}×{h}: over 4096 costs a lot of memory"))
+        # Only the colour texture is used (the app resizes it to a power of
+        # two); other maps (normal, roughness...) aren't used yet.
+        img = base_color_image(bpy.data.materials.get(m))
+        w, h = img.size if img else (0, 0)
+        if w and h and not (is_pow2(w) and is_pow2(h)):
+            nw, nh = pow2_near(w), pow2_near(h)
+            issues.append(Issue("info", f"Texture {img.name} is {w}×{h}: the app resizes it to {nw}×{nh} (powers of two)"))
+        elif max(w, h) > 4096:
+            issues.append(Issue("warn", f"Texture {img.name} is {w}×{h}: over 4096 costs a lot of memory"))
+        others = [i.name for i in material_images(bpy.data.materials.get(m)) if i != img]
+        if others:
+            issues.append(Issue("info", f"Material {m}: only the colour texture is used for now ({', '.join(others[:2])} left out)"))
     if len(materials) > 8:
         issues.append(Issue("warn", f"{len(materials)} materials: each is drawn separately, consider baking some together"))
 
