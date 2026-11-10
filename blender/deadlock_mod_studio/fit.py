@@ -411,6 +411,15 @@ def fit_to_hero(meshes, hero, hero_meshes, scene=None, mode="SHAPE", physics="SE
     lo, hi = mesh_height(meshes)
     hlo, hhi = mesh_height(hero_meshes) if hero_meshes else (0.0, pts.get("head_end", Vector((0, 0, 1.8))).z)
     s = (hhi - hlo) / max(hi - lo, 1e-6)
+    # By the body, feet to head joint, when both have one: hats, bows and
+    # tall hair don't make the body smaller (which stretches every limb).
+    head_role = roles.get(("head", ""))
+    if head_role in src and "head" in pts:
+        mine = src[head_role]["head"].z - lo
+        theirs = pts["head"].z - hlo
+        if mine > 1e-6 and theirs > 1e-6:
+            s = theirs / mine
+            report["scaled_by"] = "head"
     turn = Matrix.Identity(4)
     lx = [src[roles[k]]["head"].x for k in roles if k[1] == "L"]
     hx = [pts[n].x for n in pts if n.endswith("_L")]
@@ -619,7 +628,7 @@ def fit_to_hero(meshes, hero, hero_meshes, scene=None, mode="SHAPE", physics="SE
                     continue
                 u = (o.matrix_world @ v.co - a0).dot(ab) / max(ab.length_squared, 1e-12)
                 # Blended over the last stretch of the bone, so there's no seam.
-                t = min(max((u - 0.8) / 0.3, 0.0), 1.0)
+                t = min(max((u - 0.5) / 0.6, 0.0), 1.0)
                 if t > 0:
                     if t >= 1.0:
                         g.remove([v.index])
@@ -741,6 +750,9 @@ def shape_poses(fit_data, mapped, role_of, src, fit_limbs=False):
             poses[n] = carried
             return carried
         head = carried.translation
+        if parent is not None and parent not in seen:
+            # Where the parent, stretched or not, puts this bone's head.
+            head = pose(parent, seen + (n,)) @ (fit_data.bones[parent].matrix_local.inverted() @ rest.translation)
         stretch = 1.0
         side = role_of.get(n, ("", ""))[1]
         if not fit_limbs and key in ("forearm", "forearm2", "shin", "shin2"):
@@ -776,6 +788,16 @@ def shape_poses(fit_data, mapped, role_of, src, fit_limbs=False):
                 new_dir = (carried.to_3x3() @ Vector((0, 1, 0))).normalized()
             if fit_limbs and key in LIMBS:
                 stretch = (seg.tail - seg.head).length / max(fit_data.bones[n].length, 1e-9)
+            elif key in LIMB_ROOTS:
+                # The whole limb shares the difference in length (thigh and
+                # shin alike), instead of the shin alone taking it all.
+                lower = "forearm" if key == "upperarm" else "shin"
+                keys = [k for k in (key, key + "2", lower, lower + "2") if (k, side) in by_role]
+                last = by_role.get((lower + "2", side)) or by_role.get((lower, side))
+                if last is not None:
+                    total = sum(fit_data.bones[by_role[(k, side)]].length for k in keys)
+                    reach = (mapped[last].tail - seg.head).length
+                    stretch = min(max(reach / max(total, 1e-9), 0.7), 1.6)
         cur_dir = (carried.to_3x3() @ Vector((0, 1, 0))).normalized()
         rot = cur_dir.rotation_difference(new_dir).to_matrix() @ carried.to_3x3()
         poses[n] = Matrix.Translation(head) @ rot.to_4x4() @ Matrix.Diagonal((1.0, stretch, 1.0, 1.0))

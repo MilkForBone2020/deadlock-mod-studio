@@ -16,6 +16,7 @@ import json
 import os
 import time
 
+import bmesh
 import bpy
 from bpy.props import EnumProperty, IntProperty, StringProperty, FloatProperty
 
@@ -24,7 +25,7 @@ from mathutils import Vector
 from mathutils.bvhtree import BVHTree
 from mathutils.interpolate import poly_3d_calc
 
-ADDON_VERSION = "0.1.24"
+ADDON_VERSION = "0.1.25"
 MAX_WEIGHTS = 4
 # Fairness rule: a custom model stays close to the original's size. Smaller
 # is the unfair direction; accessories that stick out make you easier to see.
@@ -1309,6 +1310,82 @@ class DMS_OT_follow_skin(bpy.types.Operator):
         return {"FINISHED"}
 
 
+# ------------------------------------------------- keep from the original ---
+# A replaced hero part can hold things the new model doesn't (Mina's gun,
+# bag and charm are in her body mesh). They can be brought back piece by
+# piece (by material), still skinned to the hero's bones.
+
+def original_pieces():
+    """{(switched-off hero mesh, material): faces}."""
+    off = bpy.data.collections.get(OFF_COLLECTION)
+    out = {}
+    if off is None:
+        return out
+    for o in off.all_objects:
+        if o.type != "MESH" or not o.data.materials:
+            continue
+        for p in o.data.polygons:
+            m = o.data.materials[p.material_index] if p.material_index < len(o.data.materials) else None
+            if m is not None:
+                out[(o.name, m.name)] = out.get((o.name, m.name), 0) + 1
+    return out
+
+
+def keep_original(source, material, scene=None):
+    """Toggle a piece (the faces using `material`) of a switched-off hero
+    mesh in my model. Returns the new object, or None when it was removed."""
+    scene = scene or bpy.context.scene
+    tag = f"{source.name}/{material}"
+    for o in model_meshes(scene):
+        if o.get("dms_kept") == tag:
+            bpy.data.objects.remove(o)
+            return None
+    obj = source.copy()
+    obj.data = source.data.copy()
+    obj.name = f"{material} (original)"
+    for k in ("dms_hero_mesh",):
+        if k in obj:
+            del obj[k]
+    obj["dms_kept"] = tag
+    obj["dms_part"] = source.get("dms_part", "")
+    bm = bmesh.new()
+    bm.from_mesh(obj.data)
+    idx = [i for i, m in enumerate(obj.data.materials) if m is not None and m.name == material]
+    bmesh.ops.delete(bm, geom=[f for f in bm.faces if f.material_index not in idx], context="FACES")
+    bmesh.ops.delete(bm, geom=[v for v in bm.verts if not v.link_faces], context="VERTS")
+    bm.to_mesh(obj.data)
+    bm.free()
+    for i in reversed(range(len(obj.data.materials))):
+        if obj.data.materials[i] is None or obj.data.materials[i].name != material:
+            obj.data.materials.pop(index=i)
+    bpy.data.collections[MODEL_COLLECTION].objects.link(obj)
+    obj.hide_set(False)
+    obj.hide_viewport = False
+    obj.hide_render = False
+    return obj
+
+
+class DMS_OT_keep_original(bpy.types.Operator):
+    """Keep (or drop again) this piece of the hero's replaced part, e.g. the gun or bag that was in the body mesh. It stays skinned to the hero's bones"""
+
+    bl_idname = "dms.keep_original"
+    bl_label = "Keep from the original"
+    bl_options = {"REGISTER", "UNDO"}
+    source: StringProperty()
+    material: StringProperty()
+
+    def execute(self, context):
+        src = bpy.data.objects.get(self.source)
+        if src is None:
+            return {"CANCELLED"}
+        if context.object and context.object.mode != "OBJECT":
+            bpy.ops.object.mode_set(mode="OBJECT")
+        o = keep_original(src, self.material, context.scene)
+        self.report({"INFO"}, f"Kept {self.material} from {src.name}" if o else f"Dropped {self.material}")
+        store_issues(context.scene, run_checks(context.scene))
+        return {"FINISHED"}
+
+
 class DMS_OT_fix_parent(bpy.types.Operator):
     """Hang this object from the rig itself instead of one of its bones, putting it back in place"""
 
@@ -1752,6 +1829,16 @@ class DMS_PT_main(bpy.types.Panel):
         if rep_json:
             r = json.loads(rep_json)
             box.label(text=f"Last fit: {len(r.get('mapped', []))} bones matched, {len(r.get('followers', {}))} following, ×{r.get('scale', 1):.3f}", icon="CHECKMARK")
+        pieces = original_pieces()
+        if pieces:
+            sub = box.box()
+            sub.label(text="Keep from the original (gun, bag... in a replaced part)", icon="DUPLICATE")
+            kept = {o.get("dms_kept") for o in model_meshes(scene)}
+            grid = sub.grid_flow(columns=2, align=True)
+            for (obj_name, mat), faces in pieces.items():
+                on = f"{obj_name}/{mat}" in kept
+                op = grid.operator("dms.keep_original", text=mat, icon="CHECKBOX_HLT" if on else "CHECKBOX_DEHLT", depress=on)
+                op.source, op.material = obj_name, mat
 
         # Physics chains
         box = layout.box()
@@ -1839,6 +1926,7 @@ class DMS_PT_main(bpy.types.Panel):
 
 
 classes = (
+    DMS_OT_keep_original,
     DMS_OT_follow_skin,
     DMS_OT_open_project,
     DMS_OT_set_part,
