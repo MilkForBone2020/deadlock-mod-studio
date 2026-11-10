@@ -344,6 +344,8 @@ def rigid_delta(pose, rest):
     return m @ r.inverted()
 
 
+FINGERS = ("thumb", "index", "middle", "ring", "pinky")
+
 # Body parts kept exactly as modelled in "keep shape" mode (only scaled).
 TORSO = {"hips", "spine1", "spine2", "spine3", "neck", "neck2", "head"}
 LIMB_ROOTS = {"upperarm", "thigh"}
@@ -410,6 +412,10 @@ def fit_to_hero(meshes, hero, hero_meshes, scene=None, mode="SHAPE", physics="SE
     # Scale to the hero's height (feet on the ground), and face the same way.
     lo, hi = mesh_height(meshes)
     hlo, hhi = mesh_height(hero_meshes) if hero_meshes else (0.0, pts.get("head_end", Vector((0, 0, 1.8))).z)
+    # Source characters stand on their origin; a part's lowest point can be
+    # below it (Mina's gun rests on the floor at the weapon bone).
+    if abs(hlo) < 0.3 * max(hhi - hlo, 1e-6):
+        hlo = 0.0
     s = (hhi - hlo) / max(hi - lo, 1e-6)
     # By the body, feet to head joint, when both have one: hats, bows and
     # tall hair don't make the body smaller (which stretches every limb).
@@ -582,6 +588,7 @@ def fit_to_hero(meshes, hero, hero_meshes, scene=None, mode="SHAPE", physics="SE
         rot = rest_dir.rotation_difference(new_dir).to_matrix() @ rest.to_3x3()
         m = Matrix.Translation(seg.head) @ rot.to_4x4() @ Matrix.Diagonal((1.0, stretch, 1.0, 1.0))
         poses[n] = m
+    twists = {}
     for n, lead in followers.items():
         rest = fit_data.bones[n].matrix_local.copy()
         if lead is None:
@@ -590,13 +597,11 @@ def fit_to_hero(meshes, hero, hero_meshes, scene=None, mode="SHAPE", physics="SE
         lb = fit_data.bones[lead]
         poses[n] = rigid_delta(poses[lead], lb.matrix_local) @ rest
         if inline(fit_data.bones[n], lb):
-            # A twist bone along a stretched limb (Auto-Rig Pro, Unreal...):
-            # it slides to the same place along the limb (no stretch of its
-            # own, which would drag the hand), so the limb stays in one piece.
-            stretch = poses[lead].to_scale().y
-            u = (fit_data.bones[n].head_local - lb.head_local).dot(lb.tail_local - lb.head_local) / max(lb.length ** 2, 1e-12)
-            axis = (poses[lead].to_3x3().normalized() @ Vector((0, 1, 0))).normalized()
-            poses[n] = Matrix.Translation(axis * (u * lb.length * (stretch - 1.0))) @ poses[n]
+            # A twist bone along a limb (Auto-Rig Pro, Unreal...) moves and
+            # stretches exactly like the limb bone, so the limb is one piece
+            # (what reaches past the wrist goes to the hand, below).
+            poses[n] = poses[lead] @ lb.matrix_local.inverted() @ rest
+            twists.setdefault(lead, []).append(n)
     for n, m in poses.items():
         fit.pose.bones[n].matrix = m
     view.update()
@@ -617,8 +622,8 @@ def fit_to_hero(meshes, hero, hero_meshes, scene=None, mode="SHAPE", physics="SE
             continue
         b0 = fit_data.bones[n]
         a0, ab = b0.head_local, b0.tail_local - b0.head_local
-        for o in meshes:
-            g = o.vertex_groups.get(n)
+        for o, gname in [(o, gn) for o in meshes for gn in [n] + twists.get(n, [])]:
+            g = o.vertex_groups.get(gname)
             if g is None:
                 continue
             to = o.vertex_groups.get(nxt) or o.vertex_groups.new(name=nxt)
@@ -662,13 +667,8 @@ def fit_to_hero(meshes, hero, hero_meshes, scene=None, mode="SHAPE", physics="SE
 
     # Weights onto the hero's bones.
     target = {n: seg.weight for n, seg in mapped.items()}
-    if mode == "SHAPE":
-        # The model's fingers aren't on the hero's finger joints, so the
-        # hero's finger animation would twist them: they follow the hand.
-        for n in mapped:
-            key, side = role_of.get(n, ("", ""))
-            if key[:-1] in ("thumb", "index", "middle", "ring", "pinky") and f"hand_{side}" in hero.data.bones:
-                target[n] = f"hand_{side}"
+    # (Fingers keep their own bones: the fit puts each knuckle on the hero's,
+    # so the hero's finger animation bends them at the right places.)
     for n, lead in followers.items():
         target[n] = target.get(lead) if lead else None
     keep = {}
@@ -786,6 +786,27 @@ def shape_poses(fit_data, mapped, role_of, src, fit_limbs=False):
                 # Feet keep their own angle (high heels stay heels; the
                 # animations turn the foot anyway), they just move to the ankle.
                 new_dir = (carried.to_3x3() @ Vector((0, 1, 0))).normalized()
+            if key[:-1] in FINGERS:
+                # Each knuckle on the hero's, so the hero's finger animation
+                # bends the fingers where they bend.
+                head = seg.head
+                if seg.tail is not None and not seg.rigid:
+                    stretch = min(max((seg.tail - seg.head).length / max(fit_data.bones[n].length, 1e-9), 0.5), 2.0)
+            if key == "hand":
+                # The whole hand (palm and all) the size of the hero's, evenly.
+                mid = by_role.get(("middle1", side)) or by_role.get(("index1", side))
+                kn = mapped[mid].head if mid else None
+                if kn is not None:
+                    mine = (fit_data.bones[mid].head_local - fit_data.bones[n].head_local).length
+                    theirs = (kn - seg.head).length
+                    if mine > 1e-6:
+                        k = min(max(theirs / mine, 0.6), 1.6)
+                        cur_dir = (carried.to_3x3() @ Vector((0, 1, 0))).normalized()
+                        aim = (kn - seg.head).normalized()
+                        here = (carried.to_3x3() @ (fit_data.bones[n].matrix_local.inverted().to_3x3() @ (fit_data.bones[mid].head_local - fit_data.bones[n].head_local))).normalized()
+                        rot = here.rotation_difference(aim).to_matrix() @ carried.to_3x3()
+                        poses[n] = Matrix.Translation(seg.head) @ rot.to_4x4() @ Matrix.Diagonal((k, k, k, 1.0))
+                        return poses[n]
             if fit_limbs and key in LIMBS:
                 stretch = (seg.tail - seg.head).length / max(fit_data.bones[n].length, 1e-9)
             elif key in LIMB_ROOTS:
