@@ -144,6 +144,7 @@ pub fn add_cloth_chains(
     doc: &mut kv3text::Doc,
     chains: &[crate::blender::PhysicsChain],
     tuning: &std::collections::BTreeMap<String, PhysicsTuning>,
+    positions: &std::collections::HashMap<String, [f64; 3]>,
 ) -> std::result::Result<usize, String> {
     if chains.is_empty() {
         return Ok(0);
@@ -154,7 +155,7 @@ pub fn add_cloth_chains(
     let Some(template) = all.iter().find(|n| n.class().as_deref() == Some("ClothChain")).map(|n| (*n).clone()) else {
         // Older heroes (Haze) write cloth as single nodes joined by springs.
         if all.iter().any(|n| n.class().as_deref() == Some("ClothNode")) {
-            return add_cloth_nodes(doc, chains, tuning);
+            return add_cloth_nodes(doc, chains, tuning, positions);
         }
         return Err("this hero has no cloth to copy the layout from, so the physics bones stay rigid".into());
     };
@@ -227,6 +228,7 @@ fn add_cloth_nodes(
     doc: &mut kv3text::Doc,
     chains: &[crate::blender::PhysicsChain],
     tuning: &std::collections::BTreeMap<String, PhysicsTuning>,
+    positions: &std::collections::HashMap<String, [f64; 3]>,
 ) -> std::result::Result<usize, String> {
     let mut all = vec![];
     doc.root.walk(&mut all);
@@ -275,8 +277,21 @@ fn add_cloth_nodes(
                 sp.set("cloth_node_0", kv3text::Kv::str(&j.parent));
                 sp.set("cloth_node_1", kv3text::Kv::str(&j.bone));
                 sp.set("stiffness", kv_num(1.0));
-                sp.set("enable_advanced_parameters", kv3text::Kv::Raw("false".into()));
-                sp.set("is_length_explicit", kv3text::Kv::Raw("false".into()));
+                // The rod keeps the bones' rest distance (game units). Left
+                // to the compiler it comes out as zero and pulls them together.
+                match (positions.get(&j.parent), positions.get(&j.bone)) {
+                    (Some(a), Some(b)) => {
+                        let d = ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2)).sqrt() / 0.0254;
+                        sp.set("enable_advanced_parameters", kv3text::Kv::Raw("true".into()));
+                        sp.set("is_length_explicit", kv3text::Kv::Raw("true".into()));
+                        sp.set("min_length", kv_num(d as f32));
+                        sp.set("max_length", kv_num(d as f32));
+                    }
+                    _ => {
+                        sp.set("enable_advanced_parameters", kv3text::Kv::Raw("false".into()));
+                        sp.set("is_length_explicit", kv3text::Kv::Raw("false".into()));
+                    }
+                }
                 springs.push(sp);
             }
         }
@@ -965,7 +980,13 @@ pub fn build(
         material_results = applied.results;
         if !manifest.physics.is_empty() {
             progress("Adding physics");
-            match add_cloth_chains(&mut doc, &manifest.physics, physics) {
+            // Bone rest positions (glTF metres), for rod lengths.
+            let positions: std::collections::HashMap<String, [f64; 3]> = std::fs::read(r.join(&manifest.glb))
+                .ok()
+                .and_then(|b| crate::glb::parse(&b).ok())
+                .map(|g| crate::glb::joints(&g).into_iter().map(|(n, (_, m))| (n, [m[0][3], m[1][3], m[2][3]])).collect())
+                .unwrap_or_default();
+            match add_cloth_chains(&mut doc, &manifest.physics, physics, &positions) {
                 Ok(n) => physics_chains = n,
                 Err(e) => physics_note = Some(format!("Physics skipped: {e}")),
             }
@@ -1370,7 +1391,7 @@ mod tests {
         }];
         let mut tuning = std::collections::BTreeMap::new();
         tuning.insert("dms_root/dangle".to_string(), PhysicsTuning { stiffness: 0.5, ..Default::default() });
-        assert_eq!(add_cloth_chains(&mut doc, &chains, &tuning), Ok(1));
+        assert_eq!(add_cloth_chains(&mut doc, &chains, &tuning, &Default::default()), Ok(1));
         let out = kv3text::to_string(&doc);
         assert!(out.contains("name = \"dms_root\"") && out.contains("root_bone = \"dms_root\""));
         assert!(out.contains("joint_parent = \"dms_root\""));
@@ -1391,15 +1412,16 @@ mod tests {
         }
         let mut gt = std::collections::BTreeMap::new();
         gt.insert("dms_skirt/skirt".to_string(), PhysicsTuning { stiffness: 0.5, ..Default::default() });
-        assert_eq!(add_cloth_chains(&mut doc2, &strands, &gt), Ok(2));
+        assert_eq!(add_cloth_chains(&mut doc2, &strands, &gt, &Default::default()), Ok(2));
         assert_eq!(kv3text::to_string(&doc2).matches("goal_strength = 0.3").count(), 2, "0.6 x 0.5 on both strands");
         let empty: Vec<crate::blender::PhysicsChain> = vec![];
-        assert_eq!(add_cloth_chains(&mut kv3text::parse(text).unwrap(), &empty, &tuning), Ok(0));
+        assert_eq!(add_cloth_chains(&mut kv3text::parse(text).unwrap(), &empty, &tuning, &Default::default()), Ok(0));
 
         // Haze-style cloth: nodes in a folder, springs beside it.
         let haze = "<!-- kv3 encoding:text:version{e21c7f3c-8a33-41c5-9977-a76d3a32aa0d} format:modeldoc29:version{3cec427c-1b0e-4d48-a90a-0436f33a6041} -->\n{ rootNode = { children = [ { _class = \"Softbody\" children = [ { _class = \"ClothParams\" }, { _class = \"Folder\" children = [ { _class = \"ClothNode\" name = \"hose_a\" cloth_node_root_bone = \"hose_a\" is_static_node = true goal_strength = 0.6 }, { _class = \"ClothNode\" name = \"hose_mid\" cloth_node_root_bone = \"hose_mid\" is_static_node = false goal_strength = 0.0 mass = 1.0 } ] }, { _class = \"ClothSpring\" name = \"rod_1\" cloth_node_0 = \"hose_a\" cloth_node_1 = \"hose_mid\" stiffness = 0.05 enable_advanced_parameters = true is_length_explicit = true min_length = 10.0 max_length = 10.0 } ] } ] } }";
         let mut hd = kv3text::parse(haze).unwrap();
-        assert_eq!(add_cloth_chains(&mut hd, &chains, &tuning), Ok(1));
+        let pos: std::collections::HashMap<String, [f64; 3]> = [("dms_root".to_string(), [0.0, 1.0, 0.0]), ("dms_cable_2".to_string(), [0.0, 0.9, 0.0])].into_iter().collect();
+        assert_eq!(add_cloth_chains(&mut hd, &chains, &tuning, &pos), Ok(1));
         let out = kv3text::to_string(&hd);
         assert!(kv3text::parse(&out).is_ok());
         assert_eq!(out.matches("_class = \"ClothNode\"").count(), 4);
@@ -1411,14 +1433,14 @@ mod tests {
         let root = &out[out.find("name = \"dms_root\"").unwrap()..];
         assert!(root.contains("is_static_node = true"));
         let rod = &out[out.find("name = \"rod_dms_cable_2\"").unwrap()..];
-        assert!(rod.contains("is_length_explicit = false"));
+        assert!(rod.contains("is_length_explicit = true") && rod.contains("min_length = 3.937") && rod.contains("max_length = 3.937"), "10 cm in game units: {rod}");
 
         // Two pinned bones in a row (a ponytail's root and first bone): no rod between them.
         let mut pinned = chains.clone();
         pinned[0].joints.insert(1, crate::blender::PhysicsJoint { bone: "dms_hair_000".into(), parent: "dms_root".into(), simulate: false, preset: "pinned".into(), index: 0 });
         pinned[0].joints[2].parent = "dms_hair_000".into();
         let mut hd2 = kv3text::parse(haze).unwrap();
-        add_cloth_chains(&mut hd2, &pinned, &tuning).unwrap();
+        add_cloth_chains(&mut hd2, &pinned, &tuning, &Default::default()).unwrap();
         let out2 = kv3text::to_string(&hd2);
         assert!(!out2.contains("rod_dms_hair_000"), "static-static rod");
         assert!(out2.contains("cloth_node_0 = \"dms_hair_000\""));
