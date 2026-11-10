@@ -17,12 +17,12 @@ import os
 import time
 
 import bpy
-from bpy.props import EnumProperty, StringProperty
+from bpy.props import EnumProperty, IntProperty, StringProperty
 
-from . import fit
+from . import fit, physics
 from mathutils import Vector
 
-ADDON_VERSION = "0.1.13"
+ADDON_VERSION = "0.1.14"
 MAX_WEIGHTS = 4
 # Fairness rule: a custom model stays close to the original's size. Smaller
 # is the unfair direction; accessories that stick out make you easier to see.
@@ -838,6 +838,85 @@ class DMS_OT_fit_to_hero(bpy.types.Operator):
         return {"FINISHED"}
 
 
+class DMS_OT_make_chain(bpy.types.Operator):
+    """Make physics bones through the selected vertices (a ponytail, cable or strip of cloth), hanging from a bone, and weight them along it"""
+
+    bl_idname = "dms.make_chain"
+    bl_label = "Make physics chain"
+    bl_options = {"REGISTER", "UNDO"}
+
+    name: StringProperty(name="Name", default="chain")
+    parent: StringProperty(name="Hangs from")
+    count: IntProperty(name="Bones", default=4, min=2, max=12)
+    preset: EnumProperty(name="Behaves", items=physics.PRESETS, default="dangle")
+
+    @classmethod
+    def poll(cls, context):
+        o = context.object
+        return o is not None and o.type == "MESH" and o.mode == "EDIT"
+
+    def invoke(self, context, event):
+        obj = context.object
+        arm = rig(context.scene)
+        verts = physics.selected_vertices(obj)
+        if len(verts) < 3:
+            self.report({"WARNING"}, "Select the part that should move first")
+            return {"CANCELLED"}
+        if not self.parent or self.parent not in arm.data.bones:
+            self.parent = physics.main_bone(obj, verts, arm) or "head"
+        existing = {c["name"] for c in physics.load(context.scene)}
+        n = 1
+        while f"dms_{physics.safe(self.name)}" in existing:
+            self.name = f"chain_{n}"
+            n += 1
+        return context.window_manager.invoke_props_dialog(self, width=320)
+
+    def draw(self, context):
+        col = self.layout.column()
+        col.prop(self, "name")
+        col.prop_search(self, "parent", rig(context.scene).data, "bones")
+        col.prop(self, "count")
+        col.prop(self, "preset")
+
+    def execute(self, context):
+        try:
+            c = physics.make_chain(context.object, rig(context.scene), self.name, self.parent, self.count, self.preset, context.scene)
+        except RuntimeError as e:
+            self.report({"ERROR"}, str(e))
+            return {"CANCELLED"}
+        self.report({"INFO"}, f"{len(c['joints'])} bones made for {c['name']}, hanging from {self.parent}")
+        return {"FINISHED"}
+
+
+class DMS_OT_remove_chain(bpy.types.Operator):
+    """Remove this physics chain: its bones go and their weights return to the bone it hung from"""
+
+    bl_idname = "dms.remove_chain"
+    bl_label = "Remove chain"
+    bl_options = {"REGISTER", "UNDO"}
+    name: StringProperty()
+
+    def execute(self, context):
+        if context.object and context.object.mode != "OBJECT":
+            bpy.ops.object.mode_set(mode="OBJECT")
+        physics.remove_chain(context.scene, rig(context.scene), self.name)
+        return {"FINISHED"}
+
+
+class DMS_OT_chain_preset(bpy.types.Operator):
+    """How this chain behaves (fine-tune it in the app's Physics panel)"""
+
+    bl_idname = "dms.chain_preset"
+    bl_label = "Behaves"
+    bl_options = {"REGISTER", "UNDO"}
+    name: StringProperty()
+    preset: EnumProperty(name="Behaves", items=physics.PRESETS)
+
+    def execute(self, context):
+        physics.set_preset(context.scene, self.name, self.preset)
+        return {"FINISHED"}
+
+
 class DMS_OT_check(bpy.types.Operator):
     """Check the model against the game's rules"""
 
@@ -1316,6 +1395,24 @@ class DMS_PT_main(bpy.types.Panel):
             r = json.loads(rep_json)
             box.label(text=f"Last fit: {len(r.get('mapped', []))} bones matched, {len(r.get('followers', {}))} following, ×{r.get('scale', 1):.3f}", icon="CHECKMARK")
 
+        # Physics chains
+        box = layout.box()
+        box.label(text="Physics", icon="FORCE_WIND")
+        col = box.column()
+        col.scale_y = 1.2
+        col.operator("dms.make_chain", text="Make chain from selection", icon="BONE_DATA")
+        if not (context.object and context.object.mode == "EDIT"):
+            box.label(text="Select the part that should move in Edit Mode")
+        for c in physics.load(scene):
+            moving = [j for j in c["joints"] if j["simulate"]]
+            kinds = sorted({j["preset"] for j in moving})
+            row = box.row(align=True)
+            row.label(text=f"{c['name'].replace('dms_', '')}: {len(c['joints'])} bones on {c.get('parent') or '?'}")
+            if len(kinds) == 1:
+                op = row.operator_menu_enum("dms.chain_preset", "preset", text=dict((k, v) for k, v, _ in physics.PRESETS).get(kinds[0], kinds[0]))
+                op.name = c["name"]
+            row.operator("dms.remove_chain", text="", icon="X").name = c["name"]
+
         # Reference and poses
         box = layout.box()
         box.label(text="Compare and pose", icon="POSE_HLT")
@@ -1374,6 +1471,9 @@ classes = (
     DMS_OT_open_project,
     DMS_OT_set_part,
     DMS_OT_attach_to_bone,
+    DMS_OT_make_chain,
+    DMS_OT_remove_chain,
+    DMS_OT_chain_preset,
     DMS_OT_fit_import,
     DMS_OT_fit_to_hero,
     DMS_OT_check,
