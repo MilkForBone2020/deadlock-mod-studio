@@ -235,6 +235,7 @@ export const mockApi: Api = {
       dangle: [[0.4, 0.3, 0.2, 0.1][Math.min(index, 3)], 0.003, 1, 4 + 2 * index, 1, 0.1, 0.05],
       stiff: [0.9, 0.02, 0.2, 1, 0, 0, 1],
       floppy: [0.05, 0.001, 1, 12 + 2 * index, 1, 0.1, 0],
+      skirt: [[0.6, 0.45, 0.35, 0.3][Math.min(index, 3)], 0.008, 0.6, 1.5 + 0.75 * index, 1, 0.1, 0.3],
     };
     const b = base[preset] ?? [0, 0, 0, 0, 0, 0, 0];
     return [Math.min(1, b[0] * t.stiffness), b[1] * t.damping, b[2] * t.gravity, b[3] * t.wander, b[4], b[5], b[6]];

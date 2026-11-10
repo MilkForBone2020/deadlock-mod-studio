@@ -17,12 +17,12 @@ import os
 import time
 
 import bpy
-from bpy.props import EnumProperty, IntProperty, StringProperty
+from bpy.props import EnumProperty, IntProperty, StringProperty, FloatProperty
 
 from . import fit, physics
 from mathutils import Vector
 
-ADDON_VERSION = "0.1.20"
+ADDON_VERSION = "0.1.21"
 MAX_WEIGHTS = 4
 # Fairness rule: a custom model stays close to the original's size. Smaller
 # is the unfair direction; accessories that stick out make you easier to see.
@@ -942,6 +942,62 @@ class DMS_OT_make_chain(bpy.types.Operator):
         return {"FINISHED"}
 
 
+class DMS_OT_make_skirt(bpy.types.Operator):
+    """Make a ring of physics chains around a skirt (or a row across a cape or coat tails), so it sways as one piece of cloth. Uses the selected vertices, or the whole mesh"""
+
+    bl_idname = "dms.make_skirt"
+    bl_label = "Make skirt / cape physics"
+    bl_options = {"REGISTER", "UNDO"}
+
+    name: StringProperty(name="Name", default="skirt")
+    parent: StringProperty(name="Hangs from")
+    strands: IntProperty(name="Strands", description="Chains around the skirt (or across the cape)", default=10, min=3, max=16)
+    rows: IntProperty(name="Bones down", description="Moving bones from the waistband to the hem", default=3, min=2, max=5)
+    preset: EnumProperty(name="Behaves", items=physics.PRESETS, default="skirt")
+    leg_follow: FloatProperty(name="Follows legs", description="How much of the hem still follows the legs, so they don't poke through (0 = all physics)", default=0.35, min=0.0, max=1.0, subtype="FACTOR")
+
+    @classmethod
+    def poll(cls, context):
+        o = context.object
+        return o is not None and o.type == "MESH" and o.mode in {"EDIT", "OBJECT"}
+
+    def invoke(self, context, event):
+        obj = context.object
+        arm = rig(context.scene)
+        if arm is None:
+            self.report({"ERROR"}, "Open the project's work file first")
+            return {"CANCELLED"}
+        if not self.parent or self.parent not in arm.data.bones:
+            verts = physics.selected_vertices(obj) if obj.mode == "EDIT" else []
+            verts = verts or [v.index for v in obj.data.vertices]
+            zs = {i: (obj.matrix_world @ obj.data.vertices[i].co).z for i in verts}
+            top = max(zs.values()) if zs else 0
+            h = (top - min(zs.values())) if zs else 1
+            band = [i for i in verts if top - zs[i] <= 0.15 * h] or verts
+            self.parent = physics.main_bone(obj, band, arm) or next((b.name for b in arm.data.bones if b.name.lower() in ("pelvis", "hips", "hip")), "")
+        if obj.name.lower().startswith(("cape", "cloak", "coat")):
+            self.name = "cape"
+        return context.window_manager.invoke_props_dialog(self, width=340)
+
+    def draw(self, context):
+        col = self.layout.column()
+        col.prop(self, "name")
+        col.prop_search(self, "parent", rig(context.scene).data, "bones")
+        col.prop(self, "strands")
+        col.prop(self, "rows")
+        col.prop(self, "preset")
+        col.prop(self, "leg_follow")
+
+    def execute(self, context):
+        try:
+            made = physics.make_skirt(context.object, rig(context.scene), self.name, self.parent, self.strands, self.rows, self.preset, self.leg_follow, context.scene)
+        except RuntimeError as e:
+            self.report({"ERROR"}, str(e))
+            return {"CANCELLED"}
+        self.report({"INFO"}, f"{len(made)} strands made, hanging from {self.parent}")
+        return {"FINISHED"}
+
+
 class DMS_OT_chain_from_bones(bpy.types.Operator):
     """Make the selected bones (ones the model has, not the hero's own) physics chains, keeping their weights"""
 
@@ -1555,17 +1611,27 @@ class DMS_PT_main(bpy.types.Panel):
         col.scale_y = 1.2
         col.operator("dms.make_chain", text="Make chain from selection", icon="BONE_DATA")
         col.operator("dms.chain_from_bones", text="Make chain from selected bones", icon="GROUP_BONE")
+        col.operator("dms.make_skirt", text="Make skirt / cape", icon="MOD_CLOTH")
         if not (context.object and context.object.mode in {"EDIT", "POSE"}):
             box.label(text="Mesh Edit Mode: select vertices; Pose Mode: select bones")
+        shown = []
         for c in physics.load(scene):
-            moving = [j for j in c["joints"] if j["simulate"]]
-            kinds = sorted({j["preset"] for j in moving})
+            key = c.get("group") or c["name"]
+            g = next((x for x in shown if x[0] == key), None)
+            if g:
+                g[1].append(c)
+            else:
+                shown.append((key, [c]))
+        for key, members in shown:
+            joints = [j for c in members for j in c["joints"]]
+            kinds = sorted({j["preset"] for j in joints if j["simulate"]})
             row = box.row(align=True)
-            row.label(text=f"{c['name'].replace('dms_', '')}: {len(c['joints'])} bones on {c.get('parent') or '?'}")
+            what = f"{len(members)} strands, {len(joints)} bones" if len(members) > 1 else f"{len(joints)} bones"
+            row.label(text=f"{key.replace('dms_', '')}: {what} on {members[0].get('parent') or '?'}")
             if len(kinds) == 1:
                 op = row.operator_menu_enum("dms.chain_preset", "preset", text=dict((k, v) for k, v, _ in physics.PRESETS).get(kinds[0], kinds[0]))
-                op.name = c["name"]
-            row.operator("dms.remove_chain", text="", icon="X").name = c["name"]
+                op.name = key
+            row.operator("dms.remove_chain", text="", icon="X").name = key
 
         # Reference and poses
         box = layout.box()
@@ -1628,6 +1694,7 @@ classes = (
     DMS_OT_set_part,
     DMS_OT_attach_to_bone,
     DMS_OT_make_chain,
+    DMS_OT_make_skirt,
     DMS_OT_chain_from_bones,
     DMS_OT_remove_chain,
     DMS_OT_chain_preset,

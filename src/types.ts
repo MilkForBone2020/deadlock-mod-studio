@@ -281,6 +281,8 @@ export interface Returned {
 export interface PhysicsChain {
   name: string;
   parent: string;
+  /** Chains made together (a skirt's strands) share one tuning. */
+  group?: string;
   joints: { bone: string; parent: string; simulate: boolean; preset: string; index: number }[];
 }
 

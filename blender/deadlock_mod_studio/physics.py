@@ -10,6 +10,7 @@ Fit to hero records):
 
 import heapq
 import json
+import math
 import re
 
 import bpy
@@ -20,6 +21,7 @@ PRESETS = [
     ("wobbly", "Wobbly", "Jiggles but holds its shape: bows, ears, antennae"),
     ("stiff", "Stiff", "Barely moves: armour flaps, stiff ribbons"),
     ("floppy", "Floppy", "Very loose: long cloth, streamers"),
+    ("skirt", "Skirt / cape", "Sways but keeps its drape and doesn't flare: skirts, capes, coat tails"),
 ]
 
 
@@ -183,6 +185,200 @@ def make_chain(obj, rig, name, parent, count, preset, scene=None):
     return entry
 
 
+def make_skirt(obj, rig, name, parent, strands, rows, preset, leg_follow, scene=None):
+    """Make a ring of chains around a skirt (or a row across a cape): `strands`
+    chains hanging from `parent`, each a pinned waistband bone and `rows`
+    moving bones down to the hem. Each vertex is weighted to the two nearest
+    strands and the two nearest bones along them, so the cloth bends
+    smoothly. Towards the hem it keeps `leg_follow` of its old weights
+    (the legs), so legs don't poke through. Uses the selected vertices, or
+    the whole mesh when none are selected. Returns the chains."""
+    scene = scene or bpy.context.scene
+    verts = selected_vertices(obj) if obj.mode == "EDIT" else []
+    if not verts:
+        verts = [v.index for v in obj.data.vertices]
+    if len(verts) < 12:
+        raise RuntimeError("Select the skirt or cape (or the whole mesh) first")
+    if parent not in rig.data.bones:
+        raise RuntimeError(f"{parent} isn't one of the rig's bones")
+    strands = max(3, min(16, int(strands)))
+    rows = max(2, min(5, int(rows)))
+    base = f"dms_{safe(name)}"
+    me = obj.data
+    mw = obj.matrix_world
+    co = {i: mw @ me.vertices[i].co for i in verts}
+    xs = [c.x for c in co.values()]
+    ys = [c.y for c in co.values()]
+    zs = [c.z for c in co.values()]
+    cx, cy = (min(xs) + max(xs)) / 2, (min(ys) + max(ys)) / 2
+    ztop, zbot = max(zs), min(zs)
+    height = max(ztop - zbot, 1e-4)
+    t = {i: (ztop - co[i].z) / height for i in verts}
+    ang = {i: math.atan2(co[i].y - cy, co[i].x - cx) for i in verts}
+
+    # A ring (skirt) or an open sheet (cape: a big gap in the angles).
+    tau = 2 * math.pi
+    a_sorted = sorted(ang.values())
+    gaps = [(a_sorted[(k + 1) % len(a_sorted)] - a_sorted[k]) % tau for k in range(len(a_sorted))]
+    k_gap = max(range(len(gaps)), key=lambda k: gaps[k])
+    closed = gaps[k_gap] < max(1.5 * tau / strands, 0.8)
+    if closed:
+        start, span = -math.pi / 2, tau  # first strand at the front
+    else:
+        start = a_sorted[(k_gap + 1) % len(a_sorted)]
+        span = max(tau - gaps[k_gap], 1e-3)
+
+    def u_of(a):
+        """Where an angle falls between strands (0..strands)."""
+        d = (a - start) % tau
+        return d / (tau / strands) if closed else min(max(d / span, 0.0), 1.0) * (strands - 1)
+
+    def strand_angle(k):
+        return start + k * (tau / strands) if closed else start + span * k / (strands - 1)
+
+    def strand_dist(u, k):
+        d = abs(u - k)
+        return min(d, strands - d) if closed else d
+
+    u = {i: u_of(ang[i]) for i in verts}
+    # Joints down each strand: the waistband, then evenly to the hem.
+    waist = 0.12
+    tj = [0.0, waist] + [waist + (1 - waist) * (r + 1) / rows for r in range(rows)]
+    half = (1 - waist) / rows / 2
+    joints = []
+    for k in range(strands):
+        col = []
+        for j, tv in enumerate(tj):
+            band = max(half, 0.06)
+            near = [co[i] for i in verts if abs(t[i] - tv) <= band and strand_dist(u[i], k) <= 0.75]
+            if near:
+                col.append(sum(near, Vector()) / len(near))
+            else:
+                ring = [co[i] for i in verts if abs(t[i] - tv) <= band] or list(co.values())
+                r = sum(((p.x - cx) ** 2 + (p.y - cy) ** 2) ** 0.5 for p in ring) / len(ring)
+                a = strand_angle(k)
+                col.append(Vector((cx + r * math.cos(a), cy + r * math.sin(a), ztop - tv * height)))
+        joints.append(col)
+
+    # Old weights (what the skirt followed before), on rig bones only; a
+    # re-made skirt's own bones count as the bone it hangs from.
+    names = {g.index: g.name for g in obj.vertex_groups}
+    old = {}
+    for i in verts:
+        w = {}
+        for g in me.vertices[i].groups:
+            n = names.get(g.group, "")
+            if n.startswith(base + "_"):
+                n = parent
+            if g.weight > 0 and n in rig.data.bones and not n.startswith(base + "_"):
+                w[n] = w.get(n, 0.0) + g.weight
+        tot = sum(w.values())
+        old[i] = {n: x / tot for n, x in w.items()} if tot > 0 else {parent: 1.0}
+
+    # Bones.
+    if obj.mode == "EDIT":
+        bpy.ops.object.mode_set(mode="OBJECT")
+    view = bpy.context.view_layer
+    prev = view.objects.active
+    for o in view.objects:
+        o.select_set(False)
+    view.objects.active = rig
+    bpy.ops.object.mode_set(mode="EDIT")
+    eb = rig.data.edit_bones
+    for b in [b for b in eb if b.name.startswith(base + "_")]:
+        eb.remove(b)
+    inv = rig.matrix_world.inverted()
+    bone = lambda k, j: f"{base}_{k}_{j}"
+    for k in range(strands):
+        last = eb[parent]
+        for j in range(len(tj) - 1):
+            b = eb.new(bone(k, j))
+            b.head = inv @ joints[k][j]
+            b.tail = inv @ joints[k][j + 1]
+            if (b.tail - b.head).length < 1e-4:
+                b.tail = b.head + Vector((0, 0, -0.01))
+            # Roll facing out from the body, so the strands twist alike.
+            out = Vector((math.cos(strand_angle(k)), math.sin(strand_angle(k)), 0))
+            b.align_roll(inv.to_3x3() @ out)
+            b.parent = last
+            b.use_connect = False
+            b.use_deform = True
+            last = b
+    bpy.ops.object.mode_set(mode="OBJECT")
+    view.objects.active = prev
+
+    # Weights.
+    for g in list(obj.vertex_groups):
+        if g.name.startswith(base + "_"):
+            obj.vertex_groups.remove(g)
+    groups = {}
+
+    def group(n):
+        if n not in groups:
+            groups[n] = obj.vertex_groups.get(n) or obj.vertex_groups.new(name=n)
+        return groups[n]
+
+    centres = [(tj[j] + tj[j + 1]) / 2 for j in range(len(tj) - 1)]
+    for g in list(obj.vertex_groups):
+        g.remove(verts)
+    for i in verts:
+        # Around: the two nearest strands.
+        k0 = int(math.floor(u[i]))
+        f = u[i] - k0
+        if closed:
+            around = [(k0 % strands, 1 - f), ((k0 + 1) % strands, f)]
+        else:
+            k0 = min(k0, strands - 2)
+            f = u[i] - k0
+            around = [(k0, 1 - f), (k0 + 1, f)]
+        # Down: the two nearest bones.
+        tv = t[i]
+        if tv <= centres[0]:
+            down = [(0, 1.0)]
+        elif tv >= centres[-1]:
+            down = [(len(centres) - 1, 1.0)]
+        else:
+            j = max(j for j in range(len(centres)) if centres[j] <= tv)
+            g2 = (tv - centres[j]) / (centres[j + 1] - centres[j])
+            down = [(j, 1 - g2), (j + 1, g2)]
+        keep = leg_follow * tv ** 1.5
+        w = {}
+        for k, a in around:
+            for j, d in down:
+                if a * d > 0:
+                    n = bone(k, j)
+                    w[n] = w.get(n, 0.0) + (1 - keep) * a * d
+        for n, x in old[i].items():
+            w[n] = w.get(n, 0.0) + keep * x
+        top = sorted(w.items(), key=lambda kv: -kv[1])[:4]
+        tot = sum(x for _, x in top) or 1.0
+        for n, x in top:
+            if x / tot > 1e-4:
+                group(n).add([i], x / tot, "REPLACE")
+    # Groups left empty go (not the rig's bones' groups).
+    used = {g.group for v in me.vertices for g in v.groups if g.weight > 0}
+    for g in list(obj.vertex_groups):
+        if g.index not in used and g.name not in rig.data.bones:
+            obj.vertex_groups.remove(g)
+    if not any(m.type == "ARMATURE" and m.object == rig for m in obj.modifiers):
+        obj.modifiers.new("Armature", "ARMATURE").object = rig
+
+    chains = [c for c in load(scene) if c.get("group") != base and c["name"] != base]
+    made = []
+    for k in range(strands):
+        bones = [bone(k, j) for j in range(len(tj) - 1)]
+        entry = {
+            "name": f"{base}_{k}",
+            "group": base,
+            "parent": parent,
+            "joints": [{"bone": bones[0], "parent": "", "simulate": False, "preset": "pinned", "index": 0}]
+            + [{"bone": n, "parent": bones[j], "simulate": True, "preset": preset, "index": j} for j, n in enumerate(bones[1:])],
+        }
+        made.append(entry)
+    save(scene, chains + made)
+    return made
+
+
 def original_bones(scene):
     return set(json.loads(scene.get("dms_bones", "{}")))
 
@@ -273,11 +469,11 @@ def chains_from_bones(scene, rig, bone_names, preset):
 def remove_chain(scene, rig, name):
     """Delete a chain's bones; their weights go back to the bone it hung from."""
     chains = load(scene)
-    chain = next((c for c in chains if c["name"] == name), None)
-    if chain is None:
+    gone = [c for c in chains if c["name"] == name or c.get("group") == name]
+    if not gone:
         return
-    bones = [j["bone"] for j in chain["joints"]]
-    parent = chain.get("parent") or ""
+    bones = [j["bone"] for c in gone for j in c["joints"]]
+    parent = gone[0].get("parent") or ""
     for o in scene.objects:
         if o.type != "MESH":
             continue
@@ -302,13 +498,13 @@ def remove_chain(scene, rig, name):
             rig.data.edit_bones.remove(rig.data.edit_bones[b])
     bpy.ops.object.mode_set(mode="OBJECT")
     view.objects.active = prev
-    save(scene, [c for c in chains if c["name"] != name])
+    save(scene, [c for c in chains if c not in gone])
 
 
 def set_preset(scene, name, preset):
     chains = load(scene)
     for c in chains:
-        if c["name"] == name:
+        if c["name"] == name or c.get("group") == name:
             for j in c["joints"]:
                 if j["simulate"]:
                     j["preset"] = preset

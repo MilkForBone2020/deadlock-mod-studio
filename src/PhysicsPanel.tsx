@@ -11,6 +11,7 @@ const PRESETS: Record<string, string> = {
   dangle: "Dangling (calm)",
   stiff: "Stiff",
   floppy: "Floppy",
+  skirt: "Skirt / cape",
 };
 
 const SLIDERS: { key: keyof PhysicsTuning; label: string; min: number; max: number; hint: string }[] = [
@@ -20,7 +21,7 @@ const SLIDERS: { key: keyof PhysicsTuning; label: string; min: number; max: numb
   { key: "wander", label: "Reach", min: 0.5, max: 2, hint: "How far it may move from its animated place" },
 ];
 
-function Group({ projectId, chain, preset, bones, saved, act }: { projectId: string; chain: string; preset: string; bones: number; saved: PhysicsTuning | undefined; act: Act }) {
+function Group({ projectId, chain, preset, bones, strands, saved, act }: { projectId: string; chain: string; preset: string; bones: number; strands: number; saved: PhysicsTuning | undefined; act: Act }) {
   const key = `${chain}/${preset}`;
   const [t, setT] = useState<PhysicsTuning>(saved ?? DEFAULT);
   const [params, setParams] = useState<number[] | null>(null);
@@ -34,8 +35,11 @@ function Group({ projectId, chain, preset, bones, saved, act }: { projectId: str
   return (
     <div className="phys-group">
       <div className="phys-head">
-        <strong>{preset === "wobbly" ? "Wobbly parts" : preset === "dangle" ? "Dangling parts" : preset}</strong>
-        <span className="hint">{bones} bone(s) on {chain.replace(/^dms_/, "")}</span>
+        <strong>{preset === "wobbly" ? "Wobbly parts" : preset === "dangle" ? "Dangling parts" : preset === "skirt" ? "Skirt / cape" : preset}</strong>
+        <span className="hint">
+          {bones} bone(s) on {chain.replace(/^dms_/, "")}
+          {strands > 1 ? ` (${strands} strands)` : ""}
+        </span>
         <select
           value={t.preset}
           onChange={(e) => {
@@ -96,6 +100,18 @@ function Group({ projectId, chain, preset, bones, saved, act }: { projectId: str
   );
 }
 
+/** Chains made together (a skirt's strands) are tuned as one. */
+function groupChains(chains: PhysicsChain[]): { name: string; members: PhysicsChain[] }[] {
+  const out: { name: string; members: PhysicsChain[] }[] = [];
+  for (const c of chains) {
+    const name = c.group || c.name;
+    const g = out.find((x) => x.name === name);
+    if (g) g.members.push(c);
+    else out.push({ name, members: [c] });
+  }
+  return out;
+}
+
 /** Tuning for the physics bones sent from Blender, by chain and kind. */
 export function PhysicsPanel({ projectId, chains, tuning, act }: { projectId: string; chains: PhysicsChain[]; tuning: Record<string, PhysicsTuning>; act: Act }) {
   return (
@@ -107,10 +123,20 @@ export function PhysicsPanel({ projectId, chains, tuning, act }: { projectId: st
           bone it hangs from.
         </p>
       </div>
-      {chains.map((c) => {
-        const groups = [...new Set(c.joints.filter((j) => j.simulate).map((j) => j.preset))];
-        return groups.map((g) => (
-          <Group key={`${c.name}/${g}`} projectId={projectId} chain={c.name} preset={g} bones={c.joints.filter((j) => j.simulate && j.preset === g).length} saved={tuning[`${c.name}/${g}`]} act={act} />
+      {groupChains(chains).map(({ name, members }) => {
+        const joints = members.flatMap((c) => c.joints.filter((j) => j.simulate));
+        const kinds = [...new Set(joints.map((j) => j.preset))];
+        return kinds.map((g) => (
+          <Group
+            key={`${name}/${g}`}
+            projectId={projectId}
+            chain={name}
+            preset={g}
+            bones={joints.filter((j) => j.preset === g).length}
+            strands={members.length}
+            saved={tuning[`${name}/${g}`]}
+            act={act}
+          />
         ));
       })}
     </section>

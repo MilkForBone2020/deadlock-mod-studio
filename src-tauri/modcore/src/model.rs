@@ -73,7 +73,7 @@ pub fn blender_anims(doc: &kv3text::Doc) -> String {
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct PhysicsTuning {
-    /// "wobbly", "dangle", "stiff", "floppy"; empty = as Blender suggested.
+    /// "wobbly", "dangle", "stiff", "floppy", "skirt"; empty = as Blender suggested.
     #[serde(default)]
     pub preset: String,
     #[serde(default = "one")]
@@ -106,6 +106,9 @@ pub fn joint_params(preset: &str, index: u32, t: &PhysicsTuning) -> [f32; 7] {
         "dangle" => [[0.4, 0.3, 0.2, 0.1][(index as usize).min(3)], 0.003, 1.0, 4.0 + 2.0 * i, 1.0, 0.1, 0.05],
         "stiff" => [0.9, 0.02, 0.2, 1.0, 0.0, 0.0, 1.0],
         "floppy" => [0.05, 0.001, 1.0, 12.0 + 2.0 * i, 1.0, 0.1, 0.0],
+        // Hangs and sways but keeps its drape; short reach so legs don't
+        // poke through and it doesn't flare out.
+        "skirt" => [[0.6, 0.45, 0.35, 0.3][(index as usize).min(3)], 0.008, 0.6, 1.5 + 0.75 * i, 1.0, 0.1, 0.3],
         _ => [0.0; 7],
     };
     [(base[0] * t.stiffness).clamp(0.0, 1.0), base[1] * t.damping, base[2] * t.gravity, base[3] * t.wander, base[4], base[5], base[6]]
@@ -165,7 +168,7 @@ pub fn add_cloth_chains(
                 set_all(&mut o, "joint_parent", kv3text::Kv::str(&j.parent));
             }
             set_all(&mut o, "simulate", kv3text::Kv::Raw(if j.simulate { "true" } else { "false" }.into()));
-            let key = format!("{}/{}", c.name, j.preset);
+            let key = format!("{}/{}", if c.group.is_empty() { &c.name } else { &c.group }, j.preset);
             let t = tuning.get(&key).cloned().unwrap_or_default();
             let preset = if j.simulate && !t.preset.is_empty() { t.preset.as_str() } else { j.preset.as_str() };
             let p = if j.simulate { joint_params(preset, j.index, &t) } else { [0.0; 7] };
@@ -1252,6 +1255,7 @@ mod tests {
         let chains = vec![crate::blender::PhysicsChain {
             name: "dms_root".into(),
             parent: "head".into(),
+            group: String::new(),
             joints: vec![
                 crate::blender::PhysicsJoint { bone: "dms_root".into(), parent: "".into(), simulate: false, preset: "pinned".into(), index: 0 },
                 crate::blender::PhysicsJoint { bone: "dms_cable_2".into(), parent: "dms_root".into(), simulate: true, preset: "dangle".into(), index: 0 },
@@ -1269,6 +1273,19 @@ mod tests {
         assert!(!mine.contains("collision_radius = 0.5"), "duplicate keys all set");
         assert!(kv3text::parse(&out).is_ok());
         assert_eq!(out.matches("_class = \"ClothChain\"").count(), 2);
+        // A skirt's strands share their group's tuning.
+        let mut doc2 = kv3text::parse(text).unwrap();
+        let mut strands = vec![chains[0].clone(), chains[0].clone()];
+        strands[0].name = "dms_skirt_0".into();
+        strands[1].name = "dms_skirt_1".into();
+        for c in &mut strands {
+            c.group = "dms_skirt".into();
+            c.joints[1].preset = "skirt".into();
+        }
+        let mut gt = std::collections::BTreeMap::new();
+        gt.insert("dms_skirt/skirt".to_string(), PhysicsTuning { stiffness: 0.5, ..Default::default() });
+        assert_eq!(add_cloth_chains(&mut doc2, &strands, &gt), Ok(2));
+        assert_eq!(kv3text::to_string(&doc2).matches("goal_strength = 0.3").count(), 2, "0.6 x 0.5 on both strands");
         let empty: Vec<crate::blender::PhysicsChain> = vec![];
         assert_eq!(add_cloth_chains(&mut kv3text::parse(text).unwrap(), &empty, &tuning), Ok(0));
     }

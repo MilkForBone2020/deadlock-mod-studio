@@ -212,6 +212,9 @@ pub struct PhysicsChain {
     /// The hero bone it hangs from.
     #[serde(default)]
     pub parent: String,
+    /// Chains made together (a skirt's strands) share one tuning.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub group: String,
     pub joints: Vec<PhysicsJoint>,
 }
 
@@ -254,12 +257,12 @@ mod tests {
 
     #[test]
     fn addon_packs_with_its_version() {
-        assert_eq!(addon_version(), "0.1.20");
+        assert_eq!(addon_version(), "0.1.21");
         let z = addon_zip().unwrap();
         let mut a = zip::ZipArchive::new(std::io::Cursor::new(z)).unwrap();
         let names: Vec<String> = (0..a.len()).map(|i| a.by_index(i).unwrap().name().to_string()).collect();
         assert_eq!(names, vec!["blender_manifest.toml", "__init__.py", "fit.py", "physics.py"]);
-        assert!(ADDON_INIT.contains("ADDON_VERSION = \"0.1.20\""), "add-on and manifest versions match");
+        assert!(ADDON_INIT.contains("ADDON_VERSION = \"0.1.21\""), "add-on and manifest versions match");
     }
 
     #[test]
