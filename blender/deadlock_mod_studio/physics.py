@@ -178,6 +178,93 @@ def make_chain(obj, rig, name, parent, count, preset, scene=None):
     return entry
 
 
+def original_bones(scene):
+    return set(json.loads(scene.get("dms_bones", "{}")))
+
+
+def chains_from_bones(scene, rig, bone_names, preset):
+    """Turn bones the model already has (not the hero's own) into cloth
+    chains. Each selected branch gets a small pinned anchor bone at its
+    base, hanging from the bone the branch hung from, so its first bone
+    moves too (single jiggle bones included). Bones are renamed dms_...
+    (Blender renames their vertex groups to match). Returns the chains."""
+    originals = original_bones(scene)
+    picked = [b for b in bone_names if b in rig.data.bones]
+    hero_own = [b for b in picked if b in originals]
+    if hero_own:
+        raise RuntimeError(f"{', '.join(hero_own[:3])}: the hero's own bones are animated, so they can't be physics bones")
+    if not picked:
+        raise RuntimeError("Select the bones that should move (Pose Mode)")
+    sel = set(picked)
+    roots = [b for b in picked if not (rig.data.bones[b].parent and rig.data.bones[b].parent.name in sel)]
+    if any(rig.data.bones[r].parent is None for r in roots):
+        raise RuntimeError("Each chain needs a bone to hang from: parent its top bone to a body bone first")
+
+    view = bpy.context.view_layer
+    prev = view.objects.active
+    if bpy.context.object and bpy.context.object.mode != "OBJECT":
+        bpy.ops.object.mode_set(mode="OBJECT")
+    # Safe names first (vertex groups follow).
+    rename = {}
+    for b in picked:
+        new = b if b.startswith("dms_") else f"dms_{safe(b)}"
+        n, k = new, 2
+        while n != b and n in rig.data.bones:
+            n, k = f"{new}_{k}", k + 1
+        rig.data.bones[b].name = n
+        rename[b] = n
+    picked = [rename[b] for b in picked]
+    roots = [rename[r] for r in roots]
+
+    for o in view.objects:
+        o.select_set(False)
+    view.objects.active = rig
+    bpy.ops.object.mode_set(mode="EDIT")
+    eb = rig.data.edit_bones
+    anchors = {}
+    for r in roots:
+        b = eb[r]
+        parent = b.parent
+        a_name = f"{r}_anchor"
+        if a_name in eb:
+            eb.remove(eb[a_name])
+        a = eb.new(a_name)
+        a.head = b.head
+        a.tail = b.head + (b.tail - b.head).normalized() * min(0.02, (b.tail - b.head).length / 3)
+        a.roll = b.roll
+        a.parent = parent
+        a.use_deform = True
+        b.parent = a
+        b.use_connect = False
+        anchors[r] = (a_name, parent.name)
+    bpy.ops.object.mode_set(mode="OBJECT")
+    view.objects.active = prev
+
+    chains = load(scene)
+    made = []
+    kids = {}
+    for b in picked:
+        p = rig.data.bones[b].parent
+        if p is not None and p.name in picked:
+            kids.setdefault(p.name, []).append(b)
+    for r in roots:
+        a_name, hero_parent = anchors[r]
+        joints = [{"bone": a_name, "parent": "", "simulate": False, "preset": "pinned", "index": 0}]
+
+        def walk(b, parent, d):
+            joints.append({"bone": b, "parent": parent, "simulate": True, "preset": preset, "index": d})
+            for c in sorted(kids.get(b, [])):
+                walk(c, b, d + 1)
+
+        walk(r, a_name, 0)
+        entry = {"name": r, "parent": hero_parent, "joints": joints}
+        chains = [c for c in chains if c["name"] != r]
+        chains.append(entry)
+        made.append(entry)
+    save(scene, chains)
+    return made
+
+
 def remove_chain(scene, rig, name):
     """Delete a chain's bones; their weights go back to the bone it hung from."""
     chains = load(scene)

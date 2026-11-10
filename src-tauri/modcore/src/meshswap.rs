@@ -328,13 +328,14 @@ pub fn tangents(pos: &[[f64; 3]], nrm: &[[f64; 3]], uv: &[[f32; 2]], tris: &[u32
 /// `materials` maps a material name (as in Blender, or a hero material's
 /// base name) to its `.vmat` path.
 pub fn swap(original: &[u8], meshes: &[&SkinnedMesh], materials: &HashMap<String, String>, tangent_sign: f64) -> Result<Swap> {
-    swap_with_bones(original, meshes, materials, tangent_sign, &HashMap::new())
+    swap_with_bones(original, meshes, materials, tangent_sign, &HashMap::new(), &[])
 }
 
 /// `swap`, adding bones the meshes use that the part's skeleton doesn't
 /// have yet (bones added in Blender for physics). `glb_joints`: every joint
 /// of the glTF (name -> parent, world matrix at rest).
-pub fn swap_with_bones(original: &[u8], meshes: &[&SkinnedMesh], materials: &HashMap<String, String>, tangent_sign: f64, glb_joints: &HashMap<String, (Option<String>, Mat4)>) -> Result<Swap> {
+/// `also`: bones to add even if no vertex uses them (cloth chain bones).
+pub fn swap_with_bones(original: &[u8], meshes: &[&SkinnedMesh], materials: &HashMap<String, String>, tangent_sign: f64, glb_joints: &HashMap<String, (Option<String>, Mat4)>, also: &[String]) -> Result<Swap> {
     let mut d = dmx::parse(original)?;
     let model = d.elements[0].element("model").ok_or_else(|| Error::msg("DMX has no model"))?;
     let existing: HashSet<String> = d.elements[model].elements("jointList").iter().map(|&i| d.elements[i].name.clone()).collect();
@@ -350,6 +351,11 @@ pub fn swap_with_bones(original: &[u8], meshes: &[&SkinnedMesh], materials: &Has
         }
     }
     if !wanted.is_empty() {
+        for b in also {
+            if !existing.contains(b) && glb_joints.contains_key(b) && !wanted.contains(b) {
+                wanted.push(b.clone());
+            }
+        }
         add_joints(&mut d, model, &wanted, glb_joints)?;
     }
     let joint_names: Vec<String> = d.elements[model].elements("jointList").iter().map(|&i| d.elements[i].name.clone()).collect();

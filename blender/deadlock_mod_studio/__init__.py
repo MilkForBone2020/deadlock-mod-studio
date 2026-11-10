@@ -22,7 +22,7 @@ from bpy.props import EnumProperty, IntProperty, StringProperty
 from . import fit, physics
 from mathutils import Vector
 
-ADDON_VERSION = "0.1.14"
+ADDON_VERSION = "0.1.15"
 MAX_WEIGHTS = 4
 # Fairness rule: a custom model stays close to the original's size. Smaller
 # is the unfair direction; accessories that stick out make you easier to see.
@@ -733,7 +733,7 @@ class DMS_OT_fit_import(bpy.types.Operator):
         return {"FINISHED"}
 
 
-def run_fit(scene, into_part, replace, mode="SHAPE"):
+def run_fit(scene, into_part, replace, mode="SHAPE", extra="SEPARATE"):
     """Fit the incoming model onto the hero; replaced hero parts are switched
     off. Returns the report."""
     arm = rig(scene)
@@ -745,7 +745,7 @@ def run_fit(scene, into_part, replace, mode="SHAPE"):
     refs = reference_by_part()
     height_from = [refs[p] for p in replace if p in refs] or [o for p in replace for o in parts.get(p, [])]
     old_arms = fit.model_armatures(meshes)
-    report = fit.fit_to_hero(meshes, arm, height_from, scene, mode)
+    report = fit.fit_to_hero(meshes, arm, height_from, scene, mode, physics=extra)
     model = bpy.data.collections[MODEL_COLLECTION]
     for o in meshes:
         for c in list(o.users_collection):
@@ -775,7 +775,8 @@ def run_fit(scene, into_part, replace, mode="SHAPE"):
             bpy.data.objects.remove(o)
         bpy.data.collections.remove(inc)
     if report.get("physics"):
-        scene["dms_physics"] = json.dumps(report["physics"])
+        kept = {c["name"] for c in report["physics"]}
+        scene["dms_physics"] = json.dumps([c for c in physics.load(scene) if c["name"] not in kept] + report["physics"])
     report["part"] = into_part
     report["replaced"] = sorted(replace)
     scene["dms_fit_report"] = json.dumps(report, default=str)
@@ -793,6 +794,15 @@ class DMS_OT_fit_to_hero(bpy.types.Operator):
         return [(p, p, "") for p in part_names(load_project(context.scene))] or [("", "No project", "")]
 
     into_part: EnumProperty(name="Put it in", items=part_items)
+    extra: EnumProperty(
+        name="Extra bones",
+        items=[
+            ("SEPARATE", "Keep separate rigs", "Bones on their own rig (a bow) become physics bones; extra body bones merge into the nearest body bone"),
+            ("ALL", "Keep all extra bones", "Every bone with no match on the hero stays its own bone (breasts, tails, hair...), ready to make physics chains from"),
+            ("NONE", "Merge all", "No new bones: everything follows the nearest hero bone rigidly"),
+        ],
+        default="SEPARATE",
+    )
     mode: EnumProperty(
         name="Fit",
         items=[
@@ -818,6 +828,7 @@ class DMS_OT_fit_to_hero(bpy.types.Operator):
     def draw(self, context):
         col = self.layout.column()
         col.prop(self, "mode")
+        col.prop(self, "extra")
         col.prop(self, "into_part")
         col.label(text="Switch off the hero's own parts:")
         col.prop(self, "replace")
@@ -829,7 +840,7 @@ class DMS_OT_fit_to_hero(bpy.types.Operator):
         if context.object and context.object.mode != "OBJECT":
             bpy.ops.object.mode_set(mode="OBJECT")
         try:
-            r = run_fit(context.scene, self.into_part, set(self.replace), self.mode)
+            r = run_fit(context.scene, self.into_part, set(self.replace), self.mode, self.extra)
         except RuntimeError as e:
             self.report({"ERROR"}, str(e))
             return {"CANCELLED"}
@@ -885,6 +896,38 @@ class DMS_OT_make_chain(bpy.types.Operator):
             self.report({"ERROR"}, str(e))
             return {"CANCELLED"}
         self.report({"INFO"}, f"{len(c['joints'])} bones made for {c['name']}, hanging from {self.parent}")
+        return {"FINISHED"}
+
+
+class DMS_OT_chain_from_bones(bpy.types.Operator):
+    """Make the selected bones (ones the model has, not the hero's own) physics chains, keeping their weights"""
+
+    bl_idname = "dms.chain_from_bones"
+    bl_label = "Make chain from selected bones"
+    bl_options = {"REGISTER", "UNDO"}
+    preset: EnumProperty(name="Behaves", items=physics.PRESETS, default="dangle")
+
+    @classmethod
+    def poll(cls, context):
+        o = context.object
+        return o is not None and o.type == "ARMATURE" and o.mode in {"POSE", "EDIT"}
+
+    def invoke(self, context, event):
+        return context.window_manager.invoke_props_dialog(self, width=300)
+
+    def execute(self, context):
+        arm = context.object
+        if arm.mode == "EDIT":
+            names = [b.name for b in arm.data.edit_bones if b.select]
+        else:
+            # Blender 5 keeps the selection on pose bones, 4.x on bones.
+            names = [pb.name for pb in arm.pose.bones if getattr(pb, "select", False) or getattr(pb.bone, "select", False)]
+        try:
+            made = physics.chains_from_bones(context.scene, arm, names, self.preset)
+        except RuntimeError as e:
+            self.report({"ERROR"}, str(e))
+            return {"CANCELLED"}
+        self.report({"INFO"}, f"{len(made)} chain(s) made: {', '.join(c['name'] for c in made)}")
         return {"FINISHED"}
 
 
@@ -1401,8 +1444,9 @@ class DMS_PT_main(bpy.types.Panel):
         col = box.column()
         col.scale_y = 1.2
         col.operator("dms.make_chain", text="Make chain from selection", icon="BONE_DATA")
-        if not (context.object and context.object.mode == "EDIT"):
-            box.label(text="Select the part that should move in Edit Mode")
+        col.operator("dms.chain_from_bones", text="Make chain from selected bones", icon="GROUP_BONE")
+        if not (context.object and context.object.mode in {"EDIT", "POSE"}):
+            box.label(text="Mesh Edit Mode: select vertices; Pose Mode: select bones")
         for c in physics.load(scene):
             moving = [j for j in c["joints"] if j["simulate"]]
             kinds = sorted({j["preset"] for j in moving})
@@ -1472,6 +1516,7 @@ classes = (
     DMS_OT_set_part,
     DMS_OT_attach_to_bone,
     DMS_OT_make_chain,
+    DMS_OT_chain_from_bones,
     DMS_OT_remove_chain,
     DMS_OT_chain_preset,
     DMS_OT_fit_import,

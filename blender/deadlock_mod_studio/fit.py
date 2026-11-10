@@ -282,7 +282,7 @@ LIMBS = {"upperarm", "upperarm2", "forearm", "forearm2", "thigh", "thigh2", "shi
 LIMB_ENDS = {"hand", "foot"}
 
 
-def fit_to_hero(meshes, hero, hero_meshes, scene=None, mode="SHAPE", physics=True):
+def fit_to_hero(meshes, hero, hero_meshes, scene=None, mode="SHAPE", physics="SEPARATE"):
     """Fit `meshes` (rigged to their own armatures) onto `hero`. Returns a
     report dict. `hero_meshes`: the hero's original meshes, for its height.
 
@@ -480,11 +480,18 @@ def fit_to_hero(meshes, hero, hero_meshes, scene=None, mode="SHAPE", physics=Tru
                 target[n] = f"hand_{side}"
     for n, lead in followers.items():
         target[n] = target.get(lead) if lead else None
-    if physics and detached:
+    keep = {}
+    if physics in ("SEPARATE", "ALL", True):
+        keep.update(detached)
+    if physics == "ALL":
+        # Extra body bones too (breasts, a tail...): their own bones, no chain yet.
+        keep.update({n: n for n in followers if n not in detached and followers[n]})
+    if keep:
         # Bones on their own rig (a bow and its cables) become new bones on
         # the hero, hanging from the bone they follow, ready for physics.
-        new_names = add_physics_bones(hero, fit, fit_data, poses, src, detached, followers, target)
-        report["physics"] = physics_chains(src, detached, new_names, target, followers)
+        new_names = add_physics_bones(hero, fit, fit_data, poses, src, keep, followers, target)
+        report["physics"] = physics_chains(src, detached, new_names, target, followers) if detached else []
+        report["kept_bones"] = sorted(new_names.values())
         for n, nn in new_names.items():
             target[n] = nn
     for o in meshes:

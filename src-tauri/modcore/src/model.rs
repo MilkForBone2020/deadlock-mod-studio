@@ -734,6 +734,8 @@ pub fn apply_returned(
     let g = crate::glb::parse(&std::fs::read(&glb_path).at(&glb_path)?)?;
     let meshes = crate::glb::skinned_meshes(&g)?;
     let glb_joints = crate::glb::joints(&g);
+    // Cloth chain bones, weighted or not, must be in the skeleton.
+    let physics_bones: Vec<String> = manifest.physics.iter().flat_map(|c| c.joints.iter().map(|j| j.bone.clone())).collect();
     let summary: ModelSummary = serde_json::from_slice(&std::fs::read(project_dir.join("summary.json")).at(project_dir)?)?;
     let mut materials: std::collections::HashMap<String, String> = summary
         .materials
@@ -762,7 +764,7 @@ pub fn apply_returned(
         let file = part_file(doc, &part.name).ok_or_else(|| Error::msg(format!("The model source has no mesh file for {}", part.name)))?;
         let orig_path = native(&original, &file);
         let orig = std::fs::read(&orig_path).at(&orig_path)?;
-        match crate::meshswap::swap_with_bones(&orig, &mine, &materials, 1.0, &glb_joints).map_err(|e| Error::msg(format!("{}: {e}", part.name)))? {
+        match crate::meshswap::swap_with_bones(&orig, &mine, &materials, 1.0, &glb_joints, &physics_bones).map_err(|e| Error::msg(format!("{}: {e}", part.name)))? {
             crate::meshswap::Swap::Unchanged => {
                 results.push(PartResult { part: part.name.clone(), status: "kept".into(), vertices: 0, triangles: 0 });
             }
