@@ -151,7 +151,13 @@ pub fn add_cloth_chains(
     // A chain of the hero's to copy.
     let mut all = vec![];
     doc.root.walk(&mut all);
-    let template = all.iter().find(|n| n.class().as_deref() == Some("ClothChain")).map(|n| (*n).clone()).ok_or("this hero has no cloth to copy the layout from, so the physics bones stay rigid")?;
+    let Some(template) = all.iter().find(|n| n.class().as_deref() == Some("ClothChain")).map(|n| (*n).clone()) else {
+        // Older heroes (Haze) write cloth as single nodes joined by springs.
+        if all.iter().any(|n| n.class().as_deref() == Some("ClothNode")) {
+            return add_cloth_nodes(doc, chains, tuning);
+        }
+        return Err("this hero has no cloth to copy the layout from, so the physics bones stay rigid".into());
+    };
     let joints_t = template.get("chain").and_then(|c| c.get("joints")).and_then(|j| j.as_array()).cloned().unwrap_or_default();
     let root_t = joints_t.first().cloned().ok_or("the hero's cloth has no joints to copy")?;
     let child_t = joints_t.get(1).cloned().unwrap_or_else(|| root_t.clone());
@@ -200,6 +206,104 @@ pub fn add_cloth_chains(
     });
     if pending.is_some() {
         return Err("couldn't find where the hero's cloth chains live".into());
+    }
+    Ok(n)
+}
+
+fn tuned(c: &crate::blender::PhysicsChain, j: &crate::blender::PhysicsJoint, tuning: &std::collections::BTreeMap<String, PhysicsTuning>) -> [f32; 7] {
+    let key = format!("{}/{}", if c.group.is_empty() { &c.name } else { &c.group }, j.preset);
+    let t = tuning.get(&key).cloned().unwrap_or_default();
+    let preset = if j.simulate && !t.preset.is_empty() { t.preset.as_str() } else { j.preset.as_str() };
+    if j.simulate {
+        joint_params(preset, j.index, &t)
+    } else {
+        [0.0; 7]
+    }
+}
+
+/// Physics bones for heroes whose cloth is made of `ClothNode`s (one per
+/// bone, static or simulated) joined by `ClothSpring` rods, like Haze's hoses.
+fn add_cloth_nodes(
+    doc: &mut kv3text::Doc,
+    chains: &[crate::blender::PhysicsChain],
+    tuning: &std::collections::BTreeMap<String, PhysicsTuning>,
+) -> std::result::Result<usize, String> {
+    let mut all = vec![];
+    doc.root.walk(&mut all);
+    let nodes: Vec<kv3text::Kv> = all.iter().filter(|n| n.class().as_deref() == Some("ClothNode")).map(|n| (*n).clone()).collect();
+    let is_static = |n: &kv3text::Kv| matches!(n.get("is_static_node"), Some(kv3text::Kv::Raw(r)) if r == "true");
+    let static_t = nodes.iter().find(|n| is_static(n)).or(nodes.first()).cloned().ok_or("the hero's cloth has no nodes to copy")?;
+    let moving_t = nodes.iter().find(|n| !is_static(n)).cloned().unwrap_or_else(|| static_t.clone());
+    let spring_t = all.iter().find(|n| n.class().as_deref() == Some("ClothSpring")).map(|n| (*n).clone()).unwrap_or_else(|| {
+        kv3text::Kv::Object(vec![("_class".into(), kv3text::Kv::str("ClothSpring"))])
+    });
+    let mut new_nodes = vec![];
+    let mut springs = vec![];
+    for c in chains {
+        for j in &c.joints {
+            let mut o = if j.simulate { moving_t.clone() } else { static_t.clone() };
+            let p = tuned(c, j, tuning);
+            o.set("name", kv3text::Kv::str(&j.bone));
+            o.set("cloth_node_root_bone", kv3text::Kv::str(&j.bone));
+            o.set("is_static_node", kv3text::Kv::Raw(if j.simulate { "false" } else { "true" }.into()));
+            o.set("goal_strength", kv_num(p[0]));
+            o.set("goal_damping", kv_num(p[1]));
+            o.set("gravity_z", kv_num(if j.simulate { p[2] } else { 1.0 }));
+            o.set("stray_radius", kv_num(p[3]));
+            o.set("has_stray_radius", kv3text::Kv::Raw(if p[3] > 0.0 { "true" } else { "false" }.into()));
+            o.set("collision_radius", kv_num(p[4]));
+            o.set("friction", kv_num(p[5]));
+            // Not oriented by the template's own nodes; collides with the
+            // hero's capsules like its other cloth; even mass.
+            for k in ["node_base_x0", "node_base_y0", "node_base_x1", "node_base_y1"] {
+                o.set(k, kv3text::Kv::str(""));
+            }
+            o.set("transform_alignment", kv3text::Kv::Raw("0".into()));
+            for k in ["cloth_collision_layer0", "cloth_collision_layer1", "cloth_collision_layer2", "cloth_collision_layer3"] {
+                o.set(k, kv3text::Kv::Raw("true".into()));
+            }
+            o.set("mass", kv_num(1.0));
+            new_nodes.push(o);
+            // A chain's top bone hangs from the hero's bone; the rest from
+            // the bone above, with a rod that keeps their distance.
+            if !j.parent.is_empty() {
+                let mut sp = spring_t.clone();
+                sp.set("name", kv3text::Kv::str(&format!("rod_{}", j.bone)));
+                sp.set("cloth_node_0", kv3text::Kv::str(&j.parent));
+                sp.set("cloth_node_1", kv3text::Kv::str(&j.bone));
+                sp.set("stiffness", kv_num(1.0));
+                sp.set("enable_advanced_parameters", kv3text::Kv::Raw("false".into()));
+                sp.set("is_length_explicit", kv3text::Kv::Raw("false".into()));
+                springs.push(sp);
+            }
+        }
+    }
+    let n = chains.len();
+    // Nodes next to the hero's nodes, springs next to its springs (or the
+    // nodes' folder when it has none).
+    let mut pending_nodes = Some(new_nodes);
+    let mut pending_springs = Some(springs);
+    doc.root.walk_mut(&mut |k: &mut kv3text::Kv| {
+        if let Some(children) = k.children_mut() {
+            if pending_nodes.is_some() && children.iter().any(|c| c.class().as_deref() == Some("ClothNode")) {
+                children.extend(pending_nodes.take().unwrap());
+            }
+            if pending_springs.is_some() && children.iter().any(|c| c.class().as_deref() == Some("ClothSpring")) {
+                children.extend(pending_springs.take().unwrap());
+            }
+        }
+    });
+    if pending_nodes.is_some() {
+        return Err("couldn't find where the hero's cloth nodes live".into());
+    }
+    if let Some(sp) = pending_springs {
+        doc.root.walk_mut(&mut |k: &mut kv3text::Kv| {
+            if let Some(children) = k.children_mut() {
+                if children.iter().any(|c| c.class().as_deref() == Some("ClothNode")) && !children.iter().any(|c| c.class().as_deref() == Some("ClothSpring")) {
+                    children.extend(sp.clone());
+                }
+            }
+        });
     }
     Ok(n)
 }
@@ -1288,5 +1392,23 @@ mod tests {
         assert_eq!(kv3text::to_string(&doc2).matches("goal_strength = 0.3").count(), 2, "0.6 x 0.5 on both strands");
         let empty: Vec<crate::blender::PhysicsChain> = vec![];
         assert_eq!(add_cloth_chains(&mut kv3text::parse(text).unwrap(), &empty, &tuning), Ok(0));
+
+        // Haze-style cloth: nodes in a folder, springs beside it.
+        let haze = "<!-- kv3 encoding:text:version{e21c7f3c-8a33-41c5-9977-a76d3a32aa0d} format:modeldoc29:version{3cec427c-1b0e-4d48-a90a-0436f33a6041} -->\n{ rootNode = { children = [ { _class = \"Softbody\" children = [ { _class = \"ClothParams\" }, { _class = \"Folder\" children = [ { _class = \"ClothNode\" name = \"hose_a\" cloth_node_root_bone = \"hose_a\" is_static_node = true goal_strength = 0.6 }, { _class = \"ClothNode\" name = \"hose_mid\" cloth_node_root_bone = \"hose_mid\" is_static_node = false goal_strength = 0.0 mass = 1.0 } ] }, { _class = \"ClothSpring\" name = \"rod_1\" cloth_node_0 = \"hose_a\" cloth_node_1 = \"hose_mid\" stiffness = 0.05 enable_advanced_parameters = true is_length_explicit = true min_length = 10.0 max_length = 10.0 } ] } ] } }";
+        let mut hd = kv3text::parse(haze).unwrap();
+        assert_eq!(add_cloth_chains(&mut hd, &chains, &tuning), Ok(1));
+        let out = kv3text::to_string(&hd);
+        assert!(kv3text::parse(&out).is_ok());
+        assert_eq!(out.matches("_class = \"ClothNode\"").count(), 4);
+        assert_eq!(out.matches("_class = \"ClothSpring\"").count(), 2);
+        assert!(out.contains("cloth_node_root_bone = \"dms_cable_2\""));
+        assert!(out.contains("cloth_node_0 = \"dms_root\"") && out.contains("cloth_node_1 = \"dms_cable_2\""));
+        let mine = &out[out.find("name = \"dms_cable_2\"").unwrap()..];
+        assert!(mine.contains("is_static_node = false") && mine.contains("goal_strength = 0.2") && mine.contains("mass = 1.0"));
+        let root = &out[out.find("name = \"dms_root\"").unwrap()..];
+        assert!(root.contains("is_static_node = true"));
+        let rod = &out[out.find("name = \"rod_dms_cable_2\"").unwrap()..];
+        assert!(rod.contains("is_length_explicit = false"));
     }
 }
+
