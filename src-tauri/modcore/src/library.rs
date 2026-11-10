@@ -3,7 +3,7 @@
 
 use crate::{vpk, Error, IoCtx, Result};
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
@@ -796,16 +796,32 @@ impl Library {
         self.save()
     }
 
-    /// Internal files changed by more than one enabled mod.
+    /// Internal files changed by more than one enabled mod. Byte-identical
+    /// copies (the modding tools' default textures that every model mod with
+    /// a new material carries) don't clash, so they aren't listed.
     pub fn conflicts(&self) -> Vec<Conflict> {
         let mut map: BTreeMap<&str, Vec<String>> = BTreeMap::new();
-        for m in self.active_mods() {
+        let active = self.active_mods();
+        for m in &active {
             for f in &m.files {
                 map.entry(f.as_str()).or_default().push(m.id.clone());
             }
         }
+        let mut dirs: HashMap<String, Option<HashMap<String, (u32, u32)>>> = HashMap::new();
+        let mut sum = |id: &str, path: &str| -> Option<(u32, u32)> {
+            let d = dirs.entry(id.to_string()).or_insert_with(|| {
+                let m = active.iter().find(|m| m.id == id)?;
+                let dir = crate::vpk::read_directory(&self.stored_path(m)).ok()?;
+                Some(dir.entries.into_iter().map(|e| (e.path, (e.crc, e.length))).collect())
+            });
+            d.as_ref()?.get(path).copied()
+        };
         map.into_iter()
             .filter(|(_, v)| v.len() > 1)
+            .filter(|(path, mods)| {
+                let sums: Vec<Option<(u32, u32)>> = mods.iter().map(|id| sum(id, path)).collect();
+                !(sums.iter().all(|x| x.is_some()) && sums.windows(2).all(|w| w[0] == w[1]))
+            })
             .map(|(path, mods)| Conflict { path: path.to_string(), mods })
             .collect()
     }
@@ -1273,8 +1289,10 @@ mod tests {
     #[test]
     fn conflicts_found_between_enabled_mods() {
         let (t, mut lib) = lib_with(0);
-        let a = write_vpk(t.path(), "a.vpk", &["sounds/x.vsnd_c", "sounds/a.vsnd_c"]);
-        let b = write_vpk(t.path(), "b.vpk", &["sounds/x.vsnd_c"]);
+        let a = write_vpk(t.path(), "a.vpk", &["sounds/x.vsnd_c", "sounds/a.vsnd_c", "materials/default/default_color.vtex_c"]);
+        // Same default texture (identical bytes), a different x.
+        let b = t.path().join("b.vpk");
+        vpk::write_vpk(&b, &[("sounds/x.vsnd_c".into(), b"my own x".to_vec()), ("materials/default/default_color.vtex_c".into(), b"data for materials/default/default_color.vtex_c".to_vec())]).unwrap();
         let ma = lib.import_vpk(&a, ModMeta::default()).unwrap();
         let mb = lib.import_vpk(&b, ModMeta::default()).unwrap();
         assert!(lib.conflicts().is_empty());
