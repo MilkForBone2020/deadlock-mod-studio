@@ -24,7 +24,7 @@ from mathutils import Vector
 from mathutils.bvhtree import BVHTree
 from mathutils.interpolate import poly_3d_calc
 
-ADDON_VERSION = "0.1.23"
+ADDON_VERSION = "0.1.24"
 MAX_WEIGHTS = 4
 # Fairness rule: a custom model stays close to the original's size. Smaller
 # is the unfair direction; accessories that stick out make you easier to see.

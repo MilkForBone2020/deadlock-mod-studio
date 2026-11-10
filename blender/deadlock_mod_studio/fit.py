@@ -425,6 +425,10 @@ def fit_to_hero(meshes, hero, hero_meshes, scene=None, mode="SHAPE", physics="SE
         d["head"], d["tail"] = place @ d["head"], place @ d["tail"]
         d["z"] = (turn.to_3x3() @ d["z"]).normalized()
 
+    # How high each ankle sits above the model's own soles (feet are on the
+    # hero's ground here, before centring).
+    ankle_h = {sd: src[roles[("foot", sd)]]["head"].z - hlo for sd in SIDES if ("foot", sd) in roles}
+
     # Centre it on the hero front to back and side to side: line up the
     # hips, thighs and shoulders (a model built off-centre would otherwise
     # bend around joints that aren't inside it).
@@ -440,6 +444,24 @@ def fit_to_hero(meshes, hero, hero_meshes, scene=None, mode="SHAPE", physics="SE
             o.data.transform(shift)
         for d in src.values():
             d["head"], d["tail"] = shift @ d["head"], shift @ d["tail"]
+
+    # Keep shape: each foot keeps its shape and angle, so its sole should
+    # land on the ground under the hero's ankle (high heels, chunky boots):
+    # the ankle goes to the model's own ankle height there and the shin
+    # takes up the difference.
+    if mode == "SHAPE":
+        for sd, h in ankle_h.items():
+            fk = ("foot", sd)
+            if fk not in segs or h <= 0:
+                continue
+            p = segs[fk].head.copy()
+            p.z = hlo + h
+            segs[fk].head = p
+            for k in (("shin2", sd), ("shin", sd)):
+                if k in segs:
+                    segs[k].tail = p
+                    break
+        report["ankles"] = {sd: round(h, 4) for sd, h in ankle_h.items()}
 
     # A flat copy of the deform bones to fit with.
     # Unweighted bones between weighted ones stay, so chains aren't broken.
@@ -556,10 +578,57 @@ def fit_to_hero(meshes, hero, hero_meshes, scene=None, mode="SHAPE", physics="SE
         if lead is None:
             poses[n] = rest
             continue
-        poses[n] = rigid_delta(poses[lead], fit_data.bones[lead].matrix_local) @ rest
+        lb = fit_data.bones[lead]
+        poses[n] = rigid_delta(poses[lead], lb.matrix_local) @ rest
+        if inline(fit_data.bones[n], lb):
+            # A twist bone along a stretched limb (Auto-Rig Pro, Unreal...):
+            # it slides to the same place along the limb (no stretch of its
+            # own, which would drag the hand), so the limb stays in one piece.
+            stretch = poses[lead].to_scale().y
+            u = (fit_data.bones[n].head_local - lb.head_local).dot(lb.tail_local - lb.head_local) / max(lb.length ** 2, 1e-12)
+            axis = (poses[lead].to_3x3().normalized() @ Vector((0, 1, 0))).normalized()
+            poses[n] = Matrix.Translation(axis * (u * lb.length * (stretch - 1.0))) @ poses[n]
     for n, m in poses.items():
         fit.pose.bones[n].matrix = m
     view.update()
+
+    # A stretched limb bone stretches every vertex weighted to it, even past
+    # its end (a shoe partly on the shin is dragged to the floor): weight
+    # past the end goes to the next part (hand, foot), which keeps its shape.
+    by_role_m = {role_of[m]: m for m in mapped if m in role_of}
+    NEXT = {"upperarm": ("upperarm2", "forearm"), "upperarm2": ("forearm",), "forearm": ("forearm2", "hand"), "forearm2": ("hand",),
+            "thigh": ("thigh2", "shin"), "thigh2": ("shin",), "shin": ("shin2", "foot"), "shin2": ("foot",)}
+    moved = 0
+    for n in mapped:
+        key, side = role_of.get(n, ("", ""))
+        if key not in NEXT or n not in poses or abs(poses[n].to_scale().y - 1.0) < 0.02:
+            continue
+        nxt = next((by_role_m[(k, side)] for k in NEXT[key] if (k, side) in by_role_m), None)
+        if nxt is None:
+            continue
+        b0 = fit_data.bones[n]
+        a0, ab = b0.head_local, b0.tail_local - b0.head_local
+        for o in meshes:
+            g = o.vertex_groups.get(n)
+            if g is None:
+                continue
+            to = o.vertex_groups.get(nxt) or o.vertex_groups.new(name=nxt)
+            for v in o.data.vertices:
+                w = next((x.weight for x in v.groups if x.group == g.index), 0.0)
+                if w <= 0:
+                    continue
+                u = (o.matrix_world @ v.co - a0).dot(ab) / max(ab.length_squared, 1e-12)
+                # Blended over the last stretch of the bone, so there's no seam.
+                t = min(max((u - 0.8) / 0.3, 0.0), 1.0)
+                if t > 0:
+                    if t >= 1.0:
+                        g.remove([v.index])
+                    else:
+                        g.add([v.index], w * (1.0 - t), "REPLACE")
+                    to.add([v.index], w * t, "ADD")
+                    moved += 1
+    if moved:
+        report["past_end_moved"] = moved
 
     # Bake the fit into the meshes.
     dg = None
@@ -642,6 +711,13 @@ def shape_poses(fit_data, mapped, role_of, src, fit_limbs=False):
                 if k == c and m in mapped and m != n:
                     return m
             b = b.parent
+        # Rigs whose deform bones don't hang from each other (Auto-Rig Pro:
+        # the forearm hangs from the ground controller): by anatomy.
+        key, side = role_of.get(n, ("", ""))
+        for k in ANATOMY.get(key, ()):
+            m = by_role.get((k, side if k not in TORSO else ""))
+            if m is not None and m != n:
+                return m
         return None
 
     poses = {}
@@ -694,6 +770,10 @@ def shape_poses(fit_data, mapped, role_of, src, fit_limbs=False):
             if key in LIMB_ROOTS or key in LIMB_ENDS or (fit_limbs and key in LIMBS):
                 head = seg.head
             new_dir = (seg.tail - seg.head).normalized()
+            if key in ("foot", "toe") and not fit_limbs:
+                # Feet keep their own angle (high heels stay heels; the
+                # animations turn the foot anyway), they just move to the ankle.
+                new_dir = (carried.to_3x3() @ Vector((0, 1, 0))).normalized()
             if fit_limbs and key in LIMBS:
                 stretch = (seg.tail - seg.head).length / max(fit_data.bones[n].length, 1e-9)
         cur_dir = (carried.to_3x3() @ Vector((0, 1, 0))).normalized()
@@ -704,6 +784,37 @@ def shape_poses(fit_data, mapped, role_of, src, fit_limbs=False):
     for n in mapped:
         pose(n)
     return poses
+
+
+def inline(bone, lead):
+    """Whether `bone` lies along `lead` (a twist bone on a limb segment):
+    within its length, close to its line, pointing the same way."""
+    a, t = lead.head_local, lead.tail_local
+    ab = t - a
+    L = ab.length
+    if L < 1e-6:
+        return False
+    u = (bone.head_local - a).dot(ab) / (L * L)
+    off = ((bone.head_local - a) - ab * u).length
+    same_way = (bone.tail_local - bone.head_local).normalized().dot(ab.normalized()) > 0.9 if bone.length > 1e-6 else True
+    return -0.05 <= u <= 1.05 and off <= 0.25 * L and same_way
+
+
+# Each body part's parent (nearest first), for rigs whose deform bones are
+# laid out flat.
+ANATOMY = {
+    "spine1": ("hips",), "spine2": ("spine1", "hips"), "spine3": ("spine2", "spine1"),
+    "neck": ("spine3", "spine2", "spine1"), "neck2": ("neck",), "head": ("neck2", "neck", "spine3", "spine2"),
+    "shoulder": ("spine3", "spine2", "spine1"), "upperarm": ("shoulder", "spine3", "spine2"),
+    "upperarm2": ("upperarm",), "forearm": ("upperarm2", "upperarm"), "forearm2": ("forearm",),
+    "hand": ("forearm2", "forearm"), "thigh": ("hips",), "thigh2": ("thigh",), "shin": ("thigh2", "thigh"),
+    "shin2": ("shin",), "foot": ("shin2", "shin"), "toe": ("foot",),
+}
+for _f in ("thumb", "index", "middle", "ring", "pinky"):
+    ANATOMY[f"{_f}0"] = ("hand",)
+    ANATOMY[f"{_f}1"] = (f"{_f}0", "hand")
+    ANATOMY[f"{_f}2"] = (f"{_f}1",)
+    ANATOMY[f"{_f}3"] = (f"{_f}2",)
 
 
 def safe_bone_name(name):
