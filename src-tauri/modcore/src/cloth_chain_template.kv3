@@ -1,0 +1,391 @@
+{
+_class = "ClothChain"
+name = "trigger_hose_0"
+root_bone = "trigger_hose_0"
+chain =
+{
+joints =
+[
+{
+joint_name = "trigger_hose_0"
+simulate = false
+allow_rotation = false
+goal_strength = 0.0
+goal_damping = 0.0
+gravity_z = 1.0
+twist_relax = 0.0
+world_collision = false
+world_friction = 0.0
+ground_friction = 0.0
+collision_radius = 0.0
+stray_radius = 0.0
+stray_radius_stretchiness = 0.0
+friction = 0.0
+bend_spring = 0.0
+torsion_spring = 0.0
+extra_iterations = 0
+suspender = 0.0
+},
+{
+joint_name = "trigger_hose_1"
+joint_parent = "trigger_hose_0"
+simulate = true
+goal_strength = 0.7
+goal_damping = 0.0
+gravity_z = 1.0
+twist_relax = 0.0
+world_collision = false
+world_friction = 0.0
+ground_friction = 0.0
+collision_radius = 0.0
+stray_radius = 0.0
+stray_radius_stretchiness = 0.0
+friction = 0.0
+bend_spring = 0.0
+torsion_spring = 0.0
+extra_iterations = 0
+suspender = 0.0
+},
+]
+attrs =
+{
+joint_name =
+{
+display = "Joint Name"
+show = true
+ui_order = 1
+default = ""
+lock = true
+}
+joint_parent =
+{
+display = "Parent Joint"
+show = false
+ui_order = 2
+default = ""
+}
+simulate =
+{
+display = "Simulate"
+show = true
+ui_order = 3
+default = true
+}
+allow_rotation =
+{
+display = "Allow Rotation"
+show = false
+ui_order = 4
+default = true
+}
+stretch_spring =
+{
+display = "Stretch Stiffness"
+show = false
+ui_order = 5
+default = 1.0
+min = 0.0
+max = 1.0
+}
+child_sibling_spring =
+{
+display = "Spring Between Children"
+show = false
+ui_order = 6
+default = 0.0
+min = 0.0
+max = 1.0
+}
+bend_spring =
+{
+display = "Bend Stiffness"
+show = false
+ui_order = 7
+default = 1.0
+min = 0.0
+max = 1.0
+}
+torsion_spring =
+{
+display = "Torsion Stiffness"
+show = false
+ui_order = 8
+default = 0.0
+min = 0.0
+max = 1.0
+}
+explicit_length =
+{
+display = "Explicit Length"
+show = false
+ui_order = 9
+default = 0.0
+min = 0.0
+}
+world_collision =
+{
+display = "World Ground Collision"
+show = true
+ui_order = 10
+default = false
+}
+animated_length =
+{
+display = "Animated Length"
+show = false
+ui_order = 11
+default = false
+}
+goal_strength =
+{
+display = "Goal Strength"
+show = true
+ui_order = 12
+default = 0.0
+min = 0.0
+max = 1.0
+}
+goal_damping =
+{
+display = "Goal Damping"
+show = true
+ui_order = 13
+default = 0.0
+min = 0.0
+max = 1.0
+}
+drag =
+{
+display = "Extra Drag"
+show = false
+ui_order = 14
+default = 0.0
+min = 0.0
+max = 1.0
+}
+mass =
+{
+display = "Mass"
+show = false
+ui_order = 15
+default = 1.0
+min = 0.0
+}
+gravity_z =
+{
+display = "Gravity"
+show = true
+ui_order = 16
+default = 1.0
+}
+collision_radius =
+{
+display = "Collision Radius"
+show = true
+ui_order = 17
+default = 0.0
+min = 0.0
+}
+lock_translation =
+{
+display = "Lock Translation"
+show = false
+ui_order = 18
+default = false
+}
+suspender =
+{
+display = "Suspender Spring"
+show = false
+ui_order = 19
+default = 0.0
+}
+antishrink =
+{
+display = "Antishrink Strength"
+show = false
+ui_order = 20
+default = 1.0
+min = 0.0
+max = 1.0
+}
+stray_radius =
+{
+display = "Stray Radius"
+show = true
+ui_order = 21
+default = 0.0
+min = 0.0
+}
+stray_radius_stretchiness =
+{
+display = "Stray Radius Stretchiness"
+show = false
+ui_order = 22
+default = 0.0
+min = 0.0
+}
+friction =
+{
+display = "Friction"
+show = false
+ui_order = 23
+default = 0.0
+min = 0.0
+max = 1.0
+}
+vertex_map =
+{
+display = "Vertex Map"
+show = false
+ui_order = 24
+default = ""
+verify = "vertex_map"
+}
+end_effector =
+{
+display = "End Effector"
+show = false
+ui_order = 25
+default = 0.0
+lock_default_value = true
+}
+stiff_hinge =
+{
+display = "Stiff Hinge"
+show = true
+ui_order = 26
+default = 0.0
+min = 0.0
+max = 1.0
+lock_root2 = true
+}
+stiff_hinge_angle =
+{
+display = "Stiff Hinge Angle"
+show = true
+ui_order = 27
+default = 0.0
+min = 0.0
+max = 180.0
+lock_root2 = true
+}
+motion_bias =
+{
+display = "Motion Bias"
+show = true
+ui_order = 28
+default = 0.0
+min = -1.0
+max = 1.0
+lock_root = true
+}
+extra_iterations =
+{
+display = "Extra Iterations"
+show = true
+ui_order = 29
+default = 0
+min = 0
+max = 1000
+}
+twist_relax =
+{
+display = "Twist Relax"
+show = true
+ui_order = 30
+default = 0.0
+min = 0.0
+max = 1.0
+}
+extrude_sides =
+{
+display = "Extrude Sides"
+show = false
+ui_order = 31
+default = 0
+min = 0
+max = 4
+}
+extrude_radius =
+{
+display = "Extrude Radius"
+show = false
+ui_order = 32
+default = 5.0
+min = 0.0
+}
+extrude_twist =
+{
+display = "Extrude Twist"
+show = false
+ui_order = 33
+default = 0.0
+}
+extrude_forward_axis =
+{
+display = "Extrude Forward Axis"
+show = false
+ui_order = 34
+default = ""
+verify = "extrude_forward_axis"
+}
+world_friction =
+{
+display = "Ground Softness (\"world friction\" in Source1)"
+show = false
+ui_order = 35
+default = 0.0
+min = 0.0
+max = 1.0
+}
+ground_friction =
+{
+display = "Ground Friction"
+show = false
+ui_order = 36
+default = 0.0
+min = 0.0
+max = 1.0
+}
+stray_box =
+{
+display = "Stray Box"
+show = false
+ui_order = 37
+default = ""
+verify = "stray_box"
+}
+collision_layer_0 =
+{
+display = "Collision Layer 0"
+show = false
+ui_order = 38
+default = true
+}
+collision_layer_1 =
+{
+display = "Collision Layer 1"
+show = false
+ui_order = 39
+default = true
+}
+collision_layer_2 =
+{
+display = "Collision Layer 2"
+show = false
+ui_order = 40
+default = true
+}
+collision_layer_3 =
+{
+display = "Collision Layer 3"
+show = false
+ui_order = 41
+default = true
+}
+}
+selection = [  ]
+version = 2
+}
+}
