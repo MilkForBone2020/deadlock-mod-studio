@@ -266,7 +266,10 @@ fn add_cloth_nodes(
             new_nodes.push(o);
             // A chain's top bone hangs from the hero's bone; the rest from
             // the bone above, with a rod that keeps their distance.
-            if !j.parent.is_empty() {
+            // No rod between two pinned bones: both follow the animation, and
+            // the compiler refuses it ("Cannot connect two static nodes").
+            let parent_moves = c.joints.iter().any(|p| p.bone == j.parent && p.simulate);
+            if !j.parent.is_empty() && (j.simulate || parent_moves) {
                 let mut sp = spring_t.clone();
                 sp.set("name", kv3text::Kv::str(&format!("rod_{}", j.bone)));
                 sp.set("cloth_node_0", kv3text::Kv::str(&j.parent));
@@ -1409,6 +1412,16 @@ mod tests {
         assert!(root.contains("is_static_node = true"));
         let rod = &out[out.find("name = \"rod_dms_cable_2\"").unwrap()..];
         assert!(rod.contains("is_length_explicit = false"));
+
+        // Two pinned bones in a row (a ponytail's root and first bone): no rod between them.
+        let mut pinned = chains.clone();
+        pinned[0].joints.insert(1, crate::blender::PhysicsJoint { bone: "dms_hair_000".into(), parent: "dms_root".into(), simulate: false, preset: "pinned".into(), index: 0 });
+        pinned[0].joints[2].parent = "dms_hair_000".into();
+        let mut hd2 = kv3text::parse(haze).unwrap();
+        add_cloth_chains(&mut hd2, &pinned, &tuning).unwrap();
+        let out2 = kv3text::to_string(&hd2);
+        assert!(!out2.contains("rod_dms_hair_000"), "static-static rod");
+        assert!(out2.contains("cloth_node_0 = \"dms_hair_000\""));
     }
 }
 
