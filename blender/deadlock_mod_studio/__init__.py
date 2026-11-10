@@ -22,7 +22,7 @@ from bpy.props import EnumProperty, IntProperty, StringProperty
 from . import fit, physics
 from mathutils import Vector
 
-ADDON_VERSION = "0.1.17"
+ADDON_VERSION = "0.1.18"
 MAX_WEIGHTS = 4
 # Fairness rule: a custom model stays close to the original's size. Smaller
 # is the unfair direction; accessories that stick out make you easier to see.
@@ -125,6 +125,10 @@ def open_project(path):
     if work and os.path.isfile(work):
         bpy.ops.wm.open_mainfile(filepath=work)
         bpy.context.scene["dms_project"] = path
+        arm = rig(bpy.context.scene)
+        for o in model_meshes(bpy.context.scene):
+            if arm and o.parent == arm and o.parent_type != "OBJECT":
+                fix_parent(o, arm)
         return "opened"
     import_hero(path, project)
     if work:
@@ -450,6 +454,8 @@ def run_checks(scene=None):
             issues.append(Issue("error", f"{o.name}: not assigned to a part", "", o.name))
         else:
             used_parts.add(part)
+        if o.parent == arm and o.parent_type != "OBJECT":
+            issues.append(Issue("error", f"{o.name}: attached to the rig's bone '{o.parent_bone}' instead of the rig, so it's pushed out of place", "fix_parent", o.name))
         mods = [m for m in o.modifiers if m.type == "ARMATURE" and m.object == arm]
         if not mods:
             issues.append(Issue("error", f"{o.name}: isn't deformed by the rig (add an Armature modifier using {arm.name})", "", o.name))
@@ -1073,6 +1079,34 @@ class DMS_OT_fix_normals(bpy.types.Operator):
         return {"FINISHED"}
 
 
+def fix_parent(obj, arm):
+    """Hang an object from the rig itself (not one of its bones), in place:
+    its mesh is already where it belongs, posed by the Armature modifier."""
+    obj.parent = arm
+    obj.parent_type = "OBJECT"
+    obj.parent_bone = ""
+    obj.matrix_parent_inverse = arm.matrix_world.inverted()
+    obj.matrix_basis.identity()
+
+
+class DMS_OT_fix_parent(bpy.types.Operator):
+    """Hang this object from the rig itself instead of one of its bones, putting it back in place"""
+
+    bl_idname = "dms.fix_parent"
+    bl_label = "Fix attachment"
+    bl_options = {"REGISTER", "UNDO"}
+    target: StringProperty()
+
+    def execute(self, context):
+        arm = rig(context.scene)
+        objs = [bpy.data.objects.get(self.target)] if self.target else [o for o in model_meshes(context.scene) if o.parent == arm and o.parent_type != "OBJECT"]
+        for o in objs:
+            if o is not None:
+                fix_parent(o, arm)
+        store_issues(context.scene, run_checks(context.scene))
+        return {"FINISHED"}
+
+
 class DMS_OT_shrink_texture(bpy.types.Operator):
     """Shrink this texture to 2048 (in Blender only: the file on disk stays as it is). Send to app picks up the smaller copy"""
 
@@ -1306,6 +1340,9 @@ def send_to_app(scene=None):
     project = load_project(scene)
     arm = rig(scene)
     meshes = model_meshes(scene)
+    for o in meshes:
+        if o.parent == arm and o.parent_type != "OBJECT":
+            fix_parent(o, arm)
     stamp = time.strftime("%Y%m%d-%H%M%S")
     out_dir = os.path.join(project["returnDir"], stamp)
     os.makedirs(out_dir, exist_ok=True)
@@ -1561,7 +1598,7 @@ class DMS_PT_main(bpy.types.Panel):
                 row = box.row()
                 row.label(text=i.text, icon=icon[i.level])
                 if i.fix:
-                    label = {"limit_weights": "Fix", "select_unweighted": "Select", "fix_normals": "Fix", "shrink_texture": "Shrink"}[i.fix]
+                    label = {"limit_weights": "Fix", "select_unweighted": "Select", "fix_normals": "Fix", "shrink_texture": "Shrink", "fix_parent": "Fix"}[i.fix]
                     row.operator(f"dms.{i.fix}", text=label).target = i.target
 
         layout.separator()
@@ -1584,6 +1621,7 @@ classes = (
     DMS_OT_limit_weights,
     DMS_OT_select_unweighted,
     DMS_OT_shrink_texture,
+    DMS_OT_fix_parent,
     DMS_OT_fix_normals,
     DMS_OT_paint_texture,
     DMS_OT_edit_outside,

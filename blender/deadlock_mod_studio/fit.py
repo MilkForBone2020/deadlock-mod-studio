@@ -244,6 +244,10 @@ def bake_rest(obj, arms):
     old = obj.data
     obj.modifiers.clear()
     obj.parent = None
+    # A part attached to a bone of its old rig must not stay "attached to a
+    # bone" once it hangs from the hero's rig (it would jump to that bone).
+    obj.parent_type = "OBJECT"
+    obj.parent_bone = ""
     obj.matrix_world = Matrix.Identity(4)
     obj.data = mesh
     if old.users == 0:
@@ -497,7 +501,10 @@ def fit_to_hero(meshes, hero, hero_meshes, scene=None, mode="SHAPE", physics="SE
     for o in meshes:
         remap_weights(o, target)
         o.parent = hero
+        o.parent_type = "OBJECT"
+        o.parent_bone = ""
         o.matrix_parent_inverse = hero.matrix_world.inverted()
+        o.matrix_basis = Matrix.Identity(4)
         mod = o.modifiers.new("Armature", "ARMATURE")
         mod.object = hero
 
