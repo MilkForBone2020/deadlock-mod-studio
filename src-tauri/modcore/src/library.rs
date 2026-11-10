@@ -807,21 +807,36 @@ impl Library {
                 map.entry(f.as_str()).or_default().push(m.id.clone());
             }
         }
-        let mut dirs: HashMap<String, Option<HashMap<String, (u32, u32)>>> = HashMap::new();
-        let mut sum = |id: &str, path: &str| -> Option<(u32, u32)> {
-            let d = dirs.entry(id.to_string()).or_insert_with(|| {
-                let m = active.iter().find(|m| m.id == id)?;
-                let dir = crate::vpk::read_directory(&self.stored_path(m)).ok()?;
-                Some(dir.entries.into_iter().map(|e| (e.path, (e.crc, e.length))).collect())
-            });
-            d.as_ref()?.get(path).copied()
+        let mut dirs: HashMap<String, Option<crate::vpk::Directory>> = HashMap::new();
+        let mut same = |path: &str, mods: &[String]| -> bool {
+            for id in mods {
+                if !dirs.contains_key(id) {
+                    let d = active.iter().find(|m| &m.id == id).and_then(|m| crate::vpk::read_directory(&self.stored_path(m)).ok());
+                    dirs.insert(id.clone(), d);
+                }
+            }
+            let entries: Vec<Option<&crate::vpk::Entry>> = mods.iter().map(|id| dirs[id].as_ref().and_then(|d| d.find(path))).collect();
+            if entries.iter().any(|e| e.is_none()) {
+                return false;
+            }
+            let entries: Vec<&crate::vpk::Entry> = entries.into_iter().flatten().collect();
+            if entries.windows(2).all(|w| w[0].crc == w[1].crc && w[0].length + w[0].preload.len() as u32 == w[1].length + w[1].preload.len() as u32) {
+                return true;
+            }
+            // Compiled files record which project built them; compare what
+            // the game actually uses.
+            let mut prints = vec![];
+            for (id, e) in mods.iter().zip(entries) {
+                match dirs[id].as_ref().and_then(|d| d.extract(e).ok()).and_then(|b| resource_fingerprint(&b)) {
+                    Some(f) => prints.push(f),
+                    None => return false,
+                }
+            }
+            prints.windows(2).all(|w| w[0] == w[1])
         };
         map.into_iter()
             .filter(|(_, v)| v.len() > 1)
-            .filter(|(path, mods)| {
-                let sums: Vec<Option<(u32, u32)>> = mods.iter().map(|id| sum(id, path)).collect();
-                !(sums.iter().all(|x| x.is_some()) && sums.windows(2).all(|w| w[0] == w[1]))
-            })
+            .filter(|(path, mods)| !same(path, mods))
             .map(|(path, mods)| Conflict { path: path.to_string(), mods })
             .collect()
     }
@@ -1205,6 +1220,39 @@ pub fn guess_kind(files: &[String]) -> ModKind {
     }
 }
 
+/// A compiled Source 2 file's content without its build metadata (the
+/// RED2/REDI block names the project that compiled it), or None if it isn't
+/// one.
+pub fn resource_fingerprint(res: &[u8]) -> Option<u32> {
+    let u = |o: usize| res.get(o..o + 4).map(|b| u32::from_le_bytes(b.try_into().unwrap()) as usize);
+    let u16_ = |o: usize| res.get(o..o + 2).map(|b| u16::from_le_bytes(b.try_into().unwrap()));
+    if u16_(4)? != 12 {
+        return None;
+    }
+    let (bo, n) = (u(8)?, u(12)?);
+    if n == 0 || n > 64 {
+        return None;
+    }
+    let mut h = crc32fast::Hasher::new();
+    let mut end = 8 + bo + n * 12;
+    for i in 0..n {
+        let o = 8 + bo + i * 12;
+        let kind = res.get(o..o + 4)?;
+        let st = o + 4 + u(o + 4)?;
+        let len = u(o + 8)?;
+        let body = res.get(st..st + len)?;
+        end = end.max(st + len);
+        if kind == b"RED2" || kind == b"REDI" {
+            continue;
+        }
+        h.update(kind);
+        h.update(body);
+    }
+    // Pixel data after the blocks (textures).
+    h.update(res.get(end..).unwrap_or(&[]));
+    Some(h.finalize())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1302,6 +1350,32 @@ mod tests {
         assert_eq!(c.len(), 1);
         assert_eq!(c[0].path, "sounds/x.vsnd_c");
         assert_eq!(c[0].mods, vec![ma.id, mb.id]);
+    }
+
+    #[test]
+    fn same_texture_built_by_two_projects_isnt_a_conflict() {
+        let a = include_bytes!("../testdata/default_color_a.vtex_c");
+        let b = include_bytes!("../testdata/default_color_b.vtex_c");
+        let m = include_bytes!("../testdata/default_mask_a.vtex_c");
+        assert_ne!(&a[..], &b[..], "the build metadata differs");
+        assert_eq!(resource_fingerprint(a), resource_fingerprint(b));
+        assert!(resource_fingerprint(a).is_some());
+        assert_ne!(resource_fingerprint(a), resource_fingerprint(m));
+        assert_eq!(resource_fingerprint(b"not a resource at all"), None);
+        let (t, mut lib) = lib_with(0);
+        let p = "materials/default/default_color_tga_756019c2.vtex_c";
+        let va = t.path().join("a.vpk");
+        let vb = t.path().join("b.vpk");
+        let vc = t.path().join("c.vpk");
+        vpk::write_vpk(&va, &[(p.into(), a.to_vec())]).unwrap();
+        vpk::write_vpk(&vb, &[(p.into(), b.to_vec())]).unwrap();
+        vpk::write_vpk(&vc, &[(p.into(), m.to_vec())]).unwrap();
+        let ids: Vec<String> = [va, vb, vc].iter().map(|v| lib.import_vpk(v, ModMeta::default()).unwrap().id).collect();
+        lib.set_enabled(&ids[0], true).unwrap();
+        lib.set_enabled(&ids[1], true).unwrap();
+        assert!(lib.conflicts().is_empty());
+        lib.set_enabled(&ids[2], true).unwrap();
+        assert_eq!(lib.conflicts().len(), 1, "a different picture under that name still clashes");
     }
 
     #[test]
