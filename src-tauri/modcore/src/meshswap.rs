@@ -159,6 +159,15 @@ fn add_joints(d: &mut dmx::Dmx, model: usize, wanted: &[String], glb: &HashMap<S
         let rw = m3_mul(&m3_mul(&p, &rg), &m3_t(&p));
         let tw = to_game([m[0][3], m[1][3], m[2][3]]);
         let (pr, pt) = world[&parent];
+        // Valve's bones point along +X to the next bone, and cloth chains
+        // need that ("Joint must be aligned along X axis"): turn the new
+        // bone so X runs to its child (or on from its parent at the end).
+        let child = glb.iter().filter(|(_, (p, _))| p.as_deref() == Some(n.as_str())).map(|(_, (_, cm))| to_game([cm[0][3], cm[1][3], cm[2][3]])).next();
+        let dir = match child {
+            Some(c) => [c[0] - tw[0], c[1] - tw[1], c[2] - tw[2]],
+            None => [tw[0] - pt[0], tw[1] - pt[1], tw[2] - pt[2]],
+        };
+        let rw = along_x(&rw, dir);
         let lr = m3_mul(&m3_t(&pr), &rw);
         let lt = m3_v(&m3_t(&pr), [tw[0] - pt[0], tw[1] - pt[1], tw[2] - pt[2]]);
         world.insert(n.clone(), (rw, tw));
@@ -183,6 +192,25 @@ fn add_joints(d: &mut dmx::Dmx, model: usize, wanted: &[String], glb: &HashMap<S
     }
     d.elements[model].set("jointList", dmx::i32_array(dmx::T_ELEMENT, &list));
     Ok(())
+}
+
+/// `r` turned so its X axis points along `dir`, keeping the old axis that is
+/// most across `dir` as Y. Unchanged if `dir` is too short.
+fn along_x(r: &M3, dir: [f64; 3]) -> M3 {
+    let len = (dir[0] * dir[0] + dir[1] * dir[1] + dir[2] * dir[2]).sqrt();
+    if len < 1e-6 {
+        return *r;
+    }
+    let x = [dir[0] / len, dir[1] / len, dir[2] / len];
+    let col = |i: usize| [r[0][i], r[1][i], r[2][i]];
+    let dot = |a: [f64; 3], b: [f64; 3]| a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+    let up = (0..3).map(col).min_by(|a, b| dot(*a, x).abs().partial_cmp(&dot(*b, x).abs()).unwrap()).unwrap();
+    let d = dot(up, x);
+    let mut y = [up[0] - d * x[0], up[1] - d * x[1], up[2] - d * x[2]];
+    let yl = dot(y, y).sqrt().max(1e-12);
+    y = [y[0] / yl, y[1] / yl, y[2] / yl];
+    let z = [x[1] * y[2] - x[2] * y[1], x[2] * y[0] - x[0] * y[2], x[0] * y[1] - x[1] * y[0]];
+    [[x[0], y[0], z[0]], [x[1], y[1], z[1]], [x[2], y[2], z[2]]]
 }
 
 /// `gigawatt_prisoner.001` -> `gigawatt_prisoner`
@@ -537,4 +565,18 @@ pub fn swap_with_bones(original: &[u8], meshes: &[&SkinnedMesh], materials: &Has
     }
     d.compact();
     Ok(Swap::Replaced { dmx: dmx::write(&d), vertices: n, triangles: all_tris.len() / 3 })
+}
+
+#[cfg(test)]
+mod along_x_tests {
+    use super::*;
+    #[test]
+    fn new_bones_point_along_x() {
+        let r: M3 = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+        let m = along_x(&r, [0.0, 0.0, -3.0]);
+        assert_eq!([m[0][0], m[1][0], m[2][0]], [0.0, 0.0, -1.0]);
+        let det = m[0][0] * (m[1][1] * m[2][2] - m[1][2] * m[2][1]) - m[0][1] * (m[1][0] * m[2][2] - m[1][2] * m[2][0]) + m[0][2] * (m[1][0] * m[2][1] - m[1][1] * m[2][0]);
+        assert!((det - 1.0).abs() < 1e-9, "a rotation");
+        assert_eq!(along_x(&r, [0.0; 3]), r);
+    }
 }
