@@ -22,7 +22,7 @@ from bpy.props import EnumProperty, IntProperty, StringProperty
 from . import fit, physics
 from mathutils import Vector
 
-ADDON_VERSION = "0.1.19"
+ADDON_VERSION = "0.1.20"
 MAX_WEIGHTS = 4
 # Fairness rule: a custom model stays close to the original's size. Smaller
 # is the unfair direction; accessories that stick out make you easier to see.

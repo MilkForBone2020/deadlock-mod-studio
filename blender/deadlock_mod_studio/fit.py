@@ -219,15 +219,52 @@ def model_armatures(meshes):
     return arms
 
 
-def bake_rest(obj, arms):
+def side_rigs(arms):
+    """Split the model's rigs into the main body rig and side rigs that follow
+    it (a ponytail on its own wiggle-bone rig whose root bone is a Child Of
+    the head). Returns (main rigs, {side rig: {bone: main bone it follows}})."""
+    if len(arms) < 2:
+        return list(arms), {}
+    score = {a: sum(1 for b in a.data.bones if canonical(b.name)) for a in arms}
+    top = max(arms, key=lambda a: score[a])
+    main = [top]
+    side = {}
+    for a in arms:
+        if a is top:
+            continue
+        anchors = {}
+        for pb in a.pose.bones:
+            for c in pb.constraints:
+                t = getattr(c, "target", None)
+                if t is top and not c.mute and getattr(c, "subtarget", "") in top.data.bones:
+                    anchors[pb.name] = c.subtarget
+        if a.parent is top and a.parent_type == "BONE" and a.parent_bone in top.data.bones:
+            for b in a.data.bones:
+                if b.parent is None:
+                    anchors.setdefault(b.name, a.parent_bone)
+        for c in a.constraints:
+            if getattr(c, "target", None) is top and not c.mute and getattr(c, "subtarget", "") in top.data.bones:
+                for b in a.data.bones:
+                    if b.parent is None:
+                        anchors.setdefault(b.name, c.subtarget)
+        if anchors:
+            side[a] = anchors
+        else:
+            main.append(a)
+    return main, side
+
+
+def bake_rest(obj, arms, posed=()):
     """Replace the mesh with its rest-pose shape, every modifier but the
-    armature applied and the object transform baked in. Vertex groups stay."""
+    armature applied and the object transform baked in. Vertex groups stay.
+    Rigs in `posed` (side rigs following the body) keep deforming the mesh
+    in their followed pose, so their parts stay where they're seen."""
     saved = {a: a.data.pose_position for a in arms}
     for a in arms:
-        a.data.pose_position = "REST"
+        a.data.pose_position = "POSE" if a in posed else "REST"
     shown = {}
     for m in obj.modifiers:
-        if m.type == "ARMATURE":
+        if m.type == "ARMATURE" and m.object not in posed:
             shown[m] = m.show_viewport
             m.show_viewport = False
     bpy.context.view_layer.update()
@@ -305,13 +342,27 @@ def fit_to_hero(meshes, hero, hero_meshes, scene=None, mode="SHAPE", physics="SE
     if not arms:
         raise RuntimeError("The model isn't rigged: its meshes have no Armature modifier")
 
-    # Source deform bones, in world space at rest.
+    # Source deform bones, in world space at rest. A side rig that follows
+    # the body (wiggle-bone hair) is read where it sits on the body at rest.
+    main, side = side_rigs(arms)
+    saved = {a: a.data.pose_position for a in arms}
+    for a in arms:
+        a.data.pose_position = "POSE" if a in side else "REST"
+    bpy.context.view_layer.update()
     src = {}
     for a in arms:
         mw = a.matrix_world
         for b in a.data.bones:
-            if b.use_deform:
+            if not b.use_deform:
+                continue
+            if a in side:
+                m = mw @ a.pose.bones[b.name].matrix
+                src[b.name] = {"arm": a, "bone": b, "head": m.translation.copy(), "tail": mw @ a.pose.bones[b.name].tail, "z": m.to_3x3().col[2].normalized(), "anchor": side[a].get(b.name)}
+            else:
                 src[b.name] = {"arm": a, "bone": b, "head": mw @ b.head_local, "tail": mw @ b.tail_local, "z": (mw.to_3x3() @ b.matrix_local.to_3x3()).col[2].normalized()}
+    for a, p in saved.items():
+        a.data.pose_position = p
+    report["side_rigs"] = {a.name: dict(v) for a, v in side.items()}
     used_groups = set()
     for o in meshes:
         names = {g.index: g.name for g in o.vertex_groups}
@@ -321,7 +372,7 @@ def fit_to_hero(meshes, hero, hero_meshes, scene=None, mode="SHAPE", physics="SE
                     used_groups.add(names[g.group])
 
     for o in meshes:
-        bake_rest(o, arms)
+        bake_rest(o, arms, posed=set(side))
 
     # Roles of the source bones.
     roles = {}
@@ -399,6 +450,25 @@ def fit_to_hero(meshes, hero, hero_meshes, scene=None, mode="SHAPE", physics="SE
     def leader_of(name):
         d = src[name]
         b = d["bone"].parent
+        top = d["bone"]
+        while top.parent is not None and top.parent.name in src:
+            top = top.parent
+        anchor = src[top.name].get("anchor")
+        if b is None and anchor:
+            # A side rig: its chain follows the body bone its root followed.
+            detached[name] = top.name
+            if anchor in mapped:
+                return anchor
+            if anchor in src and anchor != name:
+                return leader_of(anchor)
+            # A control bone (Rigify's "head"): the deform bone it stands for.
+            c = canonical(anchor)
+            if c and roles.get(c) in mapped:
+                return roles[c]
+            body = main[0]
+            if anchor in body.data.bones:
+                p = body.matrix_world @ body.data.bones[anchor].head_local
+                return min(mapped, key=lambda m: (src[m]["head"] - p).length, default=None)
         while b is not None:
             c = canonical(b.name)
             if c and c in segs and roles.get(c) in mapped:
