@@ -21,8 +21,10 @@ from bpy.props import EnumProperty, IntProperty, StringProperty, FloatProperty
 
 from . import fit, physics
 from mathutils import Vector
+from mathutils.bvhtree import BVHTree
+from mathutils.interpolate import poly_3d_calc
 
-ADDON_VERSION = "0.1.21"
+ADDON_VERSION = "0.1.22"
 MAX_WEIGHTS = 4
 # Fairness rule: a custom model stays close to the original's size. Smaller
 # is the unfair direction; accessories that stick out make you easier to see.
@@ -444,6 +446,8 @@ def run_checks(scene=None):
         return issues
 
     bone_names = {b.name for b in bones}
+    skin_cache = None
+    phys_bones = physics_bone_names(scene)
     parts = set(part_names(project))
     used_parts = set()
     tris = 0
@@ -467,6 +471,14 @@ def run_checks(scene=None):
             issues.append(Issue("error", f"{o.name}: {over} vertices use more than {MAX_WEIGHTS} bones", "limit_weights", o.name))
         if stray:
             issues.append(Issue("warn", f"{o.name}: vertex groups that aren't bones are ignored ({', '.join(stray[:3])})"))
+        if o.name.split(".")[0] not in parts and len(o.data.vertices) <= SKIN_PART_MAX_VERTS:
+            if skin_cache is None:
+                skin_cache = SkinCache([m for m in meshes if any(x.type == "ARMATURE" and x.object == arm for x in m.modifiers)])
+            names = {g.name for g in o.vertex_groups}
+            if not (names & phys_bones):
+                plan = follow_skin_plan(o, arm, skin_cache)
+                if plan and plan[2] >= 0.8 and plan[3] > 0.04:
+                    issues.append(Issue("warn", f"{o.name}: sits on {plan[0].name} but follows different bones, so it can poke through when the body bends", "follow_skin", o.name))
         if o.name.split(".")[0] not in parts and signed_volume(o) < 0:
             issues.append(Issue("error", f"{o.name}: faces point inward (inside out). The game hides back faces, so you'd see through it", "fix_normals", o.name))
         tris += sum(len(p.vertices) - 2 for p in o.data.polygons)
@@ -1161,6 +1173,140 @@ def fix_parent(obj, arm):
     obj.matrix_basis.identity()
 
 
+# ----------------------------------------------------------- follow skin ---
+# An inner part (teeth, inner mouth, eyes) rigid on one bone while the skin
+# around it blends into others (the neck) pokes through when the body bends.
+# Giving it the skin's own weights makes it move exactly with the skin.
+
+SKIN_NEAR = 0.02  # of the model's height
+SKIN_PART_MAX_VERTS = 5000
+
+
+class SkinCache:
+    """Surfaces of the model's meshes for nearest-point lookups, built once."""
+
+    def __init__(self, meshes):
+        self.meshes = meshes
+        self.trees = {}
+        zs = [(o.matrix_world @ v.co).z for o in meshes for v in o.data.vertices]
+        self.height = (max(zs) - min(zs)) if zs else 1.0
+
+    def tree(self, o):
+        if o.name not in self.trees:
+            co = [o.matrix_world @ v.co for v in o.data.vertices]
+            polys = [tuple(p.vertices) for p in o.data.polygons]
+            self.trees[o.name] = (BVHTree.FromPolygons(co, polys), co, polys)
+        return self.trees[o.name]
+
+
+def bone_weights(obj, bone_names):
+    """Per vertex: {bone: weight} (bones only, normalised)."""
+    names = {g.index: g.name for g in obj.vertex_groups}
+    out = []
+    for v in obj.data.vertices:
+        w = {names[g.group]: g.weight for g in v.groups if g.weight > 0 and names.get(g.group) in bone_names}
+        t = sum(w.values())
+        out.append({k: x / t for k, x in w.items()} if t > 0 else {})
+    return out
+
+
+def follow_skin_plan(obj, arm, cache):
+    """(skin mesh, new weights per vertex, share of vertices on that skin,
+    how different the weights are 0..1), or None."""
+    bones = {b.name for b in arm.data.bones}
+    pts = [obj.matrix_world @ v.co for v in obj.data.vertices]
+    if not pts:
+        return None
+    limit = SKIN_NEAR * cache.height
+    best = None
+    for src in cache.meshes:
+        if src is obj or len(src.data.vertices) <= len(pts) or not len(src.data.polygons):
+            continue
+        tree = cache.tree(src)[0]
+        near = 0
+        for p in pts:
+            hit = tree.find_nearest(p)
+            if hit[0] is not None and hit[3] <= limit:
+                near += 1
+        if best is None or near > best[1]:
+            best = (src, near)
+    if best is None or best[1] == 0:
+        return None
+    src = best[0]
+    tree, co, polys = cache.tree(src)
+    src_w = bone_weights(src, bones)
+    new = []
+    for p in pts:
+        loc, _n, face, _d = tree.find_nearest(p)
+        idx = polys[face]
+        coef = poly_3d_calc([co[i] for i in idx], loc)
+        w = {}
+        for i, c in zip(idx, coef):
+            for b, x in src_w[i].items():
+                w[b] = w.get(b, 0.0) + c * x
+        top = sorted(w.items(), key=lambda kv: -kv[1])[:MAX_WEIGHTS]
+        t = sum(x for _, x in top) or 1.0
+        new.append({b: x / t for b, x in top if x / t > 1e-3})
+    old = bone_weights(obj, bones)
+    diff = sum(0.5 * sum(abs(o.get(b, 0) - n.get(b, 0)) for b in set(o) | set(n)) for o, n in zip(old, new)) / len(new)
+    return src, new, best[1] / len(pts), diff
+
+
+def follow_skin(obj, arm, cache=None):
+    """Give `obj` the bone weights of the skin it sits on. Returns the skin."""
+    cache = cache or SkinCache([o for o in model_meshes() if any(m.type == "ARMATURE" and m.object == arm for m in o.modifiers)])
+    plan = follow_skin_plan(obj, arm, cache)
+    if plan is None:
+        raise RuntimeError(f"{obj.name} doesn't sit on another part of the model")
+    src, new, _share, _diff = plan
+    bones = {b.name for b in arm.data.bones}
+    for g in list(obj.vertex_groups):
+        if g.name in bones:
+            obj.vertex_groups.remove(g)
+    groups = {}
+    for i, w in enumerate(new):
+        for b, x in w.items():
+            g = groups.get(b) or obj.vertex_groups.get(b) or obj.vertex_groups.new(name=b)
+            groups[b] = g
+            g.add([i], x, "REPLACE")
+    return src
+
+
+def physics_bone_names(scene):
+    return {j["bone"] for c in physics.load(scene) for j in c["joints"]}
+
+
+class DMS_OT_follow_skin(bpy.types.Operator):
+    """Make this part (teeth, inner mouth, eyes) follow the skin it sits on exactly, by copying the skin's bone weights, so it can't poke through when the body bends"""
+
+    bl_idname = "dms.follow_skin"
+    bl_label = "Follow skin"
+    bl_options = {"REGISTER", "UNDO"}
+    target: StringProperty()
+
+    def execute(self, context):
+        arm = rig(context.scene)
+        objs = [bpy.data.objects.get(self.target)] if self.target else [o for o in context.selected_objects if o.type == "MESH"]
+        objs = [o for o in objs if o is not None and o in model_meshes(context.scene)]
+        if not objs:
+            self.report({"ERROR"}, "Select the part that should follow the skin (teeth, inner mouth, eyes)")
+            return {"CANCELLED"}
+        if context.object and context.object.mode != "OBJECT":
+            bpy.ops.object.mode_set(mode="OBJECT")
+        cache = SkinCache([o for o in model_meshes(context.scene) if any(m.type == "ARMATURE" and m.object == arm for m in o.modifiers)])
+        done = []
+        for o in objs:
+            try:
+                src = follow_skin(o, arm, cache)
+                done.append(f"{o.name} → {src.name}")
+            except RuntimeError as e:
+                self.report({"WARNING"}, str(e))
+        store_issues(context.scene, run_checks(context.scene))
+        if done:
+            self.report({"INFO"}, "Following the skin: " + ", ".join(done))
+        return {"FINISHED"}
+
+
 class DMS_OT_fix_parent(bpy.types.Operator):
     """Hang this object from the rig itself instead of one of its bones, putting it back in place"""
 
@@ -1580,6 +1726,7 @@ class DMS_PT_main(bpy.types.Panel):
             op.bone = "head"
             row.operator_context = "INVOKE_DEFAULT"
             row.operator("dms.attach_to_bone", text="Attach to bone…")
+            box.operator("dms.follow_skin", text="Follow skin (teeth, mouth, eyes)", icon="MOD_DATA_TRANSFER").target = ""
         meshes = model_meshes(scene)
         for p in project.get("parts", []):
             n = sum(1 for o in meshes if o.get("dms_part") == p["name"])
@@ -1680,7 +1827,7 @@ class DMS_PT_main(bpy.types.Panel):
                 row = box.row()
                 row.label(text=i.text, icon=icon[i.level])
                 if i.fix:
-                    label = {"limit_weights": "Fix", "select_unweighted": "Select", "fix_normals": "Fix", "shrink_texture": "Shrink", "fix_parent": "Fix"}[i.fix]
+                    label = {"limit_weights": "Fix", "select_unweighted": "Select", "fix_normals": "Fix", "shrink_texture": "Shrink", "fix_parent": "Fix", "follow_skin": "Follow skin"}[i.fix]
                     row.operator(f"dms.{i.fix}", text=label).target = i.target
 
         layout.separator()
@@ -1690,6 +1837,7 @@ class DMS_PT_main(bpy.types.Panel):
 
 
 classes = (
+    DMS_OT_follow_skin,
     DMS_OT_open_project,
     DMS_OT_set_part,
     DMS_OT_attach_to_bone,
