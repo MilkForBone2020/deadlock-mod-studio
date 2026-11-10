@@ -22,7 +22,7 @@ from bpy.props import EnumProperty, IntProperty, StringProperty
 from . import fit, physics
 from mathutils import Vector
 
-ADDON_VERSION = "0.1.18"
+ADDON_VERSION = "0.1.19"
 MAX_WEIGHTS = 4
 # Fairness rule: a custom model stays close to the original's size. Smaller
 # is the unfair direction; accessories that stick out make you easier to see.
@@ -127,7 +127,7 @@ def open_project(path):
         bpy.context.scene["dms_project"] = path
         arm = rig(bpy.context.scene)
         for o in model_meshes(bpy.context.scene):
-            if arm and o.parent == arm and o.parent_type != "OBJECT":
+            if arm and displaced(o, arm):
                 fix_parent(o, arm)
         return "opened"
     import_hero(path, project)
@@ -454,8 +454,9 @@ def run_checks(scene=None):
             issues.append(Issue("error", f"{o.name}: not assigned to a part", "", o.name))
         else:
             used_parts.add(part)
-        if o.parent == arm and o.parent_type != "OBJECT":
-            issues.append(Issue("error", f"{o.name}: attached to the rig's bone '{o.parent_bone}' instead of the rig, so it's pushed out of place", "fix_parent", o.name))
+        why = displaced(o, arm)
+        if why:
+            issues.append(Issue("error", f"{o.name}: {why}, so it gets pushed out of place", "fix_parent", o.name))
         mods = [m for m in o.modifiers if m.type == "ARMATURE" and m.object == arm]
         if not mods:
             issues.append(Issue("error", f"{o.name}: isn't deformed by the rig (add an Armature modifier using {arm.name})", "", o.name))
@@ -1079,9 +1080,24 @@ class DMS_OT_fix_normals(bpy.types.Operator):
         return {"FINISHED"}
 
 
+def displaced(obj, arm):
+    """Why an object of my model would be pushed out of place, or ''."""
+    if obj.parent == arm and obj.parent_type != "OBJECT":
+        return f"attached to the rig's bone '{obj.parent_bone}' instead of the rig"
+    if len(obj.constraints):
+        return f"has object constraints ({', '.join(c.type.replace('_', ' ').title() for c in obj.constraints)})"
+    ad = obj.animation_data
+    if ad and (ad.action or len(ad.drivers)):
+        return "has animation or drivers on the object"
+    return ""
+
+
 def fix_parent(obj, arm):
-    """Hang an object from the rig itself (not one of its bones), in place:
-    its mesh is already where it belongs, posed by the Armature modifier."""
+    """Hang an object from the rig itself (not one of its bones), in place,
+    with nothing else moving it: its mesh is already where it belongs and
+    is posed by the Armature modifier."""
+    obj.constraints.clear()
+    obj.animation_data_clear()
     obj.parent = arm
     obj.parent_type = "OBJECT"
     obj.parent_bone = ""
@@ -1099,7 +1115,7 @@ class DMS_OT_fix_parent(bpy.types.Operator):
 
     def execute(self, context):
         arm = rig(context.scene)
-        objs = [bpy.data.objects.get(self.target)] if self.target else [o for o in model_meshes(context.scene) if o.parent == arm and o.parent_type != "OBJECT"]
+        objs = [bpy.data.objects.get(self.target)] if self.target else [o for o in model_meshes(context.scene) if displaced(o, arm)]
         for o in objs:
             if o is not None:
                 fix_parent(o, arm)
@@ -1341,7 +1357,7 @@ def send_to_app(scene=None):
     arm = rig(scene)
     meshes = model_meshes(scene)
     for o in meshes:
-        if o.parent == arm and o.parent_type != "OBJECT":
+        if displaced(o, arm):
             fix_parent(o, arm)
     stamp = time.strftime("%Y%m%d-%H%M%S")
     out_dir = os.path.join(project["returnDir"], stamp)

@@ -243,6 +243,10 @@ def bake_rest(obj, arms):
         mesh.flip_normals()
     old = obj.data
     obj.modifiers.clear()
+    # Constraints (Child Of a bone...), keyframes and drivers on the object
+    # would move it again later; the hero's rig moves it from now on.
+    obj.constraints.clear()
+    obj.animation_data_clear()
     obj.parent = None
     # A part attached to a bone of its old rig must not stay "attached to a
     # bone" once it hangs from the hero's rig (it would jump to that bone).
