@@ -50,6 +50,24 @@ for _f, _k in (("handthumb", "thumb"), ("handindex", "index"), ("handmiddle", "m
     for _i in (1, 2, 3):
         MIXAMO[f"{_f}{_i}"] = f"{_k}{_i}"
 
+# Auto-Rig Pro: deform bones end in .x (centre) or .l/.r; limbs are the
+# *_stretch bones (the *_twist ones follow them).
+ARP = {
+    "root": "hips", "spine_01": "spine1", "spine_02": "spine2", "spine_03": "spine3",
+    "neck": "neck", "subneck_1": "neck2", "head": "head", "shoulder": "shoulder",
+    "arm_stretch": "upperarm", "forearm_stretch": "forearm", "hand": "hand",
+    "thigh_stretch": "thigh", "leg_stretch": "shin", "foot": "foot", "toes_01": "toe",
+}
+for _f in ("thumb", "index", "middle", "ring", "pinky"):
+    ARP[f"{_f}1"] = ARP[f"c_{_f}1"] = f"{_f}1"
+    ARP[f"c_{_f}2"] = f"{_f}2"
+    ARP[f"c_{_f}3"] = f"{_f}3"
+    if _f != "thumb":
+        ARP[f"c_{_f}1_base"] = f"{_f}0"
+
+# Whole-character controllers some rigs weight meshes to.
+ROOT_CONTROLLERS = {"c_traj", "c_pos", "root", "root_bone", "master", "armature"}
+
 # Unity/VRChat humanoid and common hand-made names (side removed, lowercase,
 # no spaces or underscores).
 GENERIC = {
@@ -99,8 +117,14 @@ def canonical(name):
                 n = "Right" + n[len(prefix):]
             else:
                 n = n[len(prefix):]
+    if n.endswith(".x") and n[:-2] in ARP:
+        n, flavour = n[:-2], "arp"
     base, side = split_side(n)
-    if flavour == "rigify":
+    if flavour == "generic" and side and base in ARP and re.search(r"\.[lr]$", n):
+        flavour = "arp"
+    if flavour == "arp":
+        key = ARP.get(base)
+    elif flavour == "rigify":
         key = RIGIFY.get(base)
     elif flavour == "mixamo":
         key = MIXAMO.get(base.lower())
@@ -368,7 +392,7 @@ def fit_to_hero(meshes, hero, hero_meshes, scene=None, mode="SHAPE", physics="SE
         names = {g.index: g.name for g in o.vertex_groups}
         for v in o.data.vertices:
             for g in v.groups:
-                if g.weight > 0 and names.get(g.group) in src:
+                if g.weight > 0.01 and names.get(g.group) in src:
                     used_groups.add(names[g.group])
 
     for o in meshes:
@@ -419,10 +443,17 @@ def fit_to_hero(meshes, hero, hero_meshes, scene=None, mode="SHAPE", physics="SE
 
     # A flat copy of the deform bones to fit with.
     # Unweighted bones between weighted ones stay, so chains aren't broken.
-    for n in list(used_groups):
+    # (Only between: a rig's top bone above everything, like Auto-Rig Pro's
+    # c_traj, isn't part of the body.)
+    weighted = set(used_groups)
+    for n in list(weighted):
+        path = []
         b = src[n]["bone"].parent
         while b is not None and b.name in src:
-            used_groups.add(b.name)
+            path.append(b.name)
+            if b.name in weighted:
+                used_groups.update(path)
+                path = []
             b = b.parent
     bones = sorted(used_groups)
     fit_data = bpy.data.armatures.new("dms_fit")
@@ -448,6 +479,10 @@ def fit_to_hero(meshes, hero, hero_meshes, scene=None, mode="SHAPE", physics="SE
     report["mapped"] = sorted(mapped)
 
     def leader_of(name):
+        # A rig's ground/root controller (Auto-Rig Pro's c_traj) carrying
+        # weights: the body part it stands for is the hips.
+        if name.lower() in ROOT_CONTROLLERS and roles.get(("hips", "")) in mapped:
+            return roles[("hips", "")]
         d = src[name]
         b = d["bone"].parent
         top = d["bone"]

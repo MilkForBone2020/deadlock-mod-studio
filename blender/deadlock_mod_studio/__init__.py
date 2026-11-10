@@ -24,7 +24,7 @@ from mathutils import Vector
 from mathutils.bvhtree import BVHTree
 from mathutils.interpolate import poly_3d_calc
 
-ADDON_VERSION = "0.1.22"
+ADDON_VERSION = "0.1.23"
 MAX_WEIGHTS = 4
 # Fairness rule: a custom model stays close to the original's size. Smaller
 # is the unfair direction; accessories that stick out make you easier to see.
@@ -737,7 +737,9 @@ def bring_in(path):
     with bpy.data.libraries.load(path, link=False) as (src, dst):
         dst.objects = list(src.objects)
     objs = [o for o in dst.objects if o is not None]
-    meshes = [o for o in objs if o.type == "MESH" and not o.name.startswith("WGT-") and len(o.data.polygons) > 0]
+    # Bone shapes (Rigify's WGT-, Auto-Rig Pro's cs_ ...) aren't the character.
+    shapes = {pb.custom_shape for o in objs if o.type == "ARMATURE" for pb in o.pose.bones if pb.custom_shape}
+    meshes = [o for o in objs if o.type == "MESH" and o not in shapes and not o.name.startswith(("WGT-", "cs_")) and len(o.data.polygons) > 0]
     arms = fit.model_armatures(meshes)
     keep = set(meshes) | set(arms)
     coll = bpy.data.collections.get(INCOMING_COLLECTION) or bpy.data.collections.new(INCOMING_COLLECTION)
