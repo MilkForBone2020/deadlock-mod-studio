@@ -163,11 +163,37 @@ pub fn has_shared_addons_path(text: &str) -> Result<bool> {
     }))
 }
 
-/// True when the SearchPaths block already loads the addons folder.
+/// Marks the `Mod` / `Write` lines this app adds, so only those are removed.
+const MARK: &str = "// deadlock mod studio";
+
+fn key_of(line: &str) -> Option<String> {
+    let t = tokens(body(line));
+    (t.len() == 2).then(|| t[0].to_ascii_lowercase())
+}
+
+fn is_our_extra(line: &str) -> bool {
+    body(line).trim_end().ends_with(MARK) && matches!(key_of(line).as_deref(), Some("mod") | Some("write"))
+}
+
+/// True when the SearchPaths block already loads the addons folder and
+/// keeps `citadel` as the game's MOD and write folder. (Without `Mod` and
+/// `Write` lines the game makes the FIRST `Game` folder its MOD folder, our
+/// mods folder, and then fails to find its own settings: "Unable to read
+/// default keybinding configuration".)
 pub fn has_addons_path(text: &str) -> Result<bool> {
     let lines = split_keep_endings(text);
     let (open, close) = find_search_paths(&lines)?;
-    Ok(lines[open..=close].iter().any(|l| is_addons_line(l)))
+    let block = &lines[open..=close];
+    let has = |k: &str| block.iter().any(|l| key_of(l).as_deref() == Some(k));
+    Ok(block.iter().any(|l| is_addons_line(l)) && has("mod") && has("write"))
+}
+
+/// True when any line this app adds is in SearchPaths (to clean up, even
+/// from an install patched by an older version).
+pub fn has_any_own_line(text: &str) -> Result<bool> {
+    let lines = split_keep_endings(text);
+    let (open, close) = find_search_paths(&lines)?;
+    Ok(lines[open..=close].iter().any(|l| is_addons_line(l) || is_our_extra(l)))
 }
 
 /// Add `Game citadel/addons_studio` directly above the first `Game
@@ -181,8 +207,11 @@ pub fn add_addons_path(text: &str) -> Result<String> {
     let lines = split_keep_endings(text);
     let (open, close) = find_search_paths(&lines)?;
     let target = (open..=close)
-        .find(|&i| is_insert_anchor(lines[i]))
+        .find(|&i| is_insert_anchor(lines[i]) || is_addons_line(lines[i]))
         .ok_or_else(|| Error::msg("SearchPaths has no `Game citadel` line to insert above"))?;
+    let have_game = lines[open..=close].iter().any(|l| is_addons_line(l));
+    let have_mod = lines[open..=close].iter().any(|l| key_of(l).as_deref() == Some("mod"));
+    let have_write = lines[open..=close].iter().any(|l| key_of(l).as_deref() == Some("write"));
 
     let model = lines[target];
     let content = body(model);
@@ -199,13 +228,28 @@ pub fn add_addons_path(text: &str) -> Result<String> {
     let gap_len = after_key.len() - after_key.trim_start().len();
     let gap = if gap_len == 0 { "\t" } else { &after_key[..gap_len] };
     let quoted = after_key.trim_start().starts_with('"');
-    let value = if quoted { format!("\"{ADDONS_VALUE}\"") } else { ADDONS_VALUE.to_string() };
-    let new_line = format!("{indent}{key}{gap}{value}{ending}");
-
-    let mut out = String::with_capacity(text.len() + new_line.len());
+    let q = |v: &str| if quoted { format!("\"{v}\"") } else { v.to_string() };
+    let kq = |k: &str| if key.starts_with('"') { format!("\"{k}\"") } else { k.to_string() };
+    let new_line = if have_game { String::new() } else { format!("{indent}{key}{gap}{}{ending}", q(ADDONS_VALUE)) };
+    // Keep citadel as the game's MOD and write folder (see has_addons_path),
+    // at the end of the list as Valve lays them out in Counter-Strike 2.
+    let mut extra = String::new();
+    if !have_mod {
+        extra.push_str(&format!("{indent}{}{gap}{}\t{MARK}{ending}", kq("Mod"), q("citadel")));
+    }
+    if !have_write {
+        extra.push_str(&format!("{indent}{}{gap}{}\t{MARK}{ending}", kq("Write"), q("citadel")));
+    }
+    // The closing brace may share its line with the last entry: then the
+    // extras go before that line's brace-only part isn't possible, so
+    // before the closing line.
+    let mut out = String::with_capacity(text.len() + new_line.len() + extra.len());
     for (i, l) in lines.iter().enumerate() {
         if i == target {
             out.push_str(&new_line);
+        }
+        if i == close {
+            out.push_str(&extra);
         }
         out.push_str(l);
     }
@@ -221,7 +265,7 @@ pub fn remove_addons_path(text: &str) -> Result<String> {
     let out: String = lines
         .iter()
         .enumerate()
-        .filter(|(i, l)| !(*i >= open && *i <= close && is_addons_line(l)))
+        .filter(|(i, l)| !(*i >= open && *i <= close && (is_addons_line(l) || is_our_extra(l))))
         .map(|(_, l)| *l)
         .collect();
     validate(&out)?;
@@ -259,6 +303,26 @@ mod tests {
     use super::*;
 
     const SAMPLE: &str = "\"GameInfo\"\r\n{\r\n\tgame \"citadel\"\r\n\tFileSystem\r\n\t{\r\n\t\t//\r\n\t\t// comment about search paths\r\n\t\t//\r\n\t\tSearchPaths\r\n\t\t{\r\n\t\t\tMod                 citadel\r\n\t\t\tWrite               citadel\r\n\t\t\tGame                citadel\r\n\t\t\tWrite               core\r\n\t\t\tMod                 core\r\n\t\t\tGame                core\r\n\t\t}\r\n\t}\r\n\tConVars\r\n\t{\r\n\t\t\"r_shadows\" \"1\" // keep\r\n\t}\r\n}\r\n";
+
+    #[test]
+    fn keeps_citadel_as_the_mod_and_write_folder() {
+        let gi = "\"GameInfo\"\r\n{\r\n\tFileSystem\r\n\t{\r\n\t\tSearchPaths\r\n\t\t{\r\n\t\t\tGame_LowViolence\tcitadel_lv\r\n\r\n\t\t\tGame\t\t\t\tcitadel\r\n\t\t\tGame\t\t\t\tcore\r\n\t\t}\r\n\t}\r\n}\r\n";
+        let out = add_addons_path(gi).unwrap();
+        assert!(out.contains("\t\t\tGame\t\t\t\tcitadel/addons_studio\r\n\t\t\tGame\t\t\t\tcitadel\r\n\t\t\tGame\t\t\t\tcore\r\n\t\t\tMod\t\t\t\tcitadel\t// deadlock mod studio\r\n\t\t\tWrite\t\t\t\tcitadel\t// deadlock mod studio\r\n\t\t}"), "{out}");
+        assert!(has_addons_path(&out).unwrap());
+        assert_eq!(add_addons_path(&out).unwrap(), out, "idempotent");
+        assert_eq!(remove_addons_path(&out).unwrap(), gi, "restored exactly");
+        // An install patched by an older version (only the Game line) gets the two lines added.
+        let old = gi.replace("\t\t\tGame\t\t\t\tcitadel\r\n", "\t\t\tGame\t\t\t\tcitadel/addons_studio\r\n\t\t\tGame\t\t\t\tcitadel\r\n");
+        assert!(!has_addons_path(&old).unwrap());
+        let fixed = add_addons_path(&old).unwrap();
+        assert_eq!(fixed, out);
+        // A Mod line Valve ships is never removed.
+        let valve = gi.replace("\t\t\tGame\t\t\t\tcore\r\n", "\t\t\tGame\t\t\t\tcore\r\n\t\t\tMod\t\t\t\tcitadel\r\n");
+        let v2 = add_addons_path(&valve).unwrap();
+        assert_eq!(v2.matches("Mod\t").count(), 1);
+        assert_eq!(remove_addons_path(&v2).unwrap(), valve);
+    }
 
     #[test]
     fn detects_missing_line() {

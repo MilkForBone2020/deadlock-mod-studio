@@ -155,11 +155,11 @@ pub fn plan(lib: &Library, game_dir: &Path) -> Result<Plan> {
 
     let gi_text = std::fs::read_to_string(steam::gameinfo_path(game_dir))
         .at(&steam::gameinfo_path(game_dir))?;
-    match gameinfo::has_addons_path(&gi_text) {
-        Ok(has) => {
+    match gameinfo::has_addons_path(&gi_text).and_then(|has| Ok((has, gameinfo::has_any_own_line(&gi_text)?))) {
+        Ok((has, any)) => {
             if !desired.is_empty() && !has {
                 p.actions.push(Action::AddSearchPath);
-            } else if desired.is_empty() && has {
+            } else if desired.is_empty() && any {
                 p.actions.push(Action::RemoveSearchPath);
             }
         }
