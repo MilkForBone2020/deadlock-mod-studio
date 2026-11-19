@@ -202,6 +202,12 @@ pub struct MaterialFile {
     pub roughness: Option<f32>,
     #[serde(default)]
     pub metallic: Option<f32>,
+    /// Colour texture scroll speed (U, V per second), when set in Blender.
+    #[serde(default)]
+    pub scroll: Option<[f32; 2]>,
+    /// Scroll in jumps (0 = smooth).
+    #[serde(default)]
+    pub scroll_steps: Option<f32>,
 }
 
 /// A cloth chain made in Blender (bones the add-on added to the rig).
@@ -257,12 +263,12 @@ mod tests {
 
     #[test]
     fn addon_packs_with_its_version() {
-        assert_eq!(addon_version(), "0.1.27");
+        assert_eq!(addon_version(), "0.1.28");
         let z = addon_zip().unwrap();
         let mut a = zip::ZipArchive::new(std::io::Cursor::new(z)).unwrap();
         let names: Vec<String> = (0..a.len()).map(|i| a.by_index(i).unwrap().name().to_string()).collect();
         assert_eq!(names, vec!["blender_manifest.toml", "__init__.py", "fit.py", "physics.py"]);
-        assert!(ADDON_INIT.contains("ADDON_VERSION = \"0.1.27\""), "add-on and manifest versions match");
+        assert!(ADDON_INIT.contains("ADDON_VERSION = \"0.1.28\""), "add-on and manifest versions match");
     }
 
     #[test]

@@ -233,6 +233,43 @@ pub fn from_template(
     (out, refs)
 }
 
+/// Set the colour texture's scroll speed (U, V per second) and stepping, the
+/// way Lash's sparkles move. Nothing changes when `scroll` is None.
+pub fn with_scroll(vmat: &str, scroll: Option<[f32; 2]>, steps: Option<f32>) -> String {
+    let Some([u, v]) = scroll else { return vmat.to_string() };
+    let speed = format!("[{u:.6} {v:.6} 0.000000 0.000000]");
+    let quant = format!("{}", steps.unwrap_or(0.0).max(0.0));
+    let mut seen_speed = false;
+    let mut seen_quant = false;
+    let (out, _) = rewrite(
+        vmat,
+        |k, _| {
+            if k == "g_vAlbedoScrollSpeed1" {
+                seen_speed = true;
+                return Edit::Set(speed.clone());
+            }
+            if k == "g_flAlbedoScrollQuantize1" {
+                seen_quant = true;
+                return Edit::Set(quant.clone());
+            }
+            Edit::Keep
+        },
+        &[],
+    );
+    let mut extra = vec![];
+    if !seen_speed {
+        extra.push(("g_vAlbedoScrollSpeed1".to_string(), speed));
+    }
+    if !seen_quant {
+        extra.push(("g_flAlbedoScrollQuantize1".to_string(), quant));
+    }
+    if extra.is_empty() {
+        out
+    } else {
+        rewrite(&out, |_, _| Edit::Keep, &extra).0
+    }
+}
+
 fn linear_to_srgb(c: f32) -> u8 {
     let c = c.clamp(0.0, 1.0);
     let s = if c <= 0.0031308 { 12.92 * c } else { 1.055 * c.powf(1.0 / 2.4) - 0.055 };
@@ -336,7 +373,20 @@ pub fn apply(
             prepare_color(&std::fs::read(&img_path).at(&img_path)?)
         };
         if let Some(path) = hero {
-            let Some(color_rel) = &f.color else { continue };
+            let Some(color_rel) = &f.color else {
+                // Only made to move: the hero's material as it is, scrolling.
+                if f.scroll.is_some() {
+                    let src = native(original, path);
+                    let text = std::fs::read_to_string(&src)
+                        .map_err(|_| Error::msg(format!("The source of {path} wasn't extracted. Extract the hero again.")))?;
+                    let (vmat, refs) = rewrite(&text, |_, _| Edit::Keep, &[]);
+                    let vmat = with_scroll(&vmat, f.scroll, f.scroll_steps);
+                    copy_refs(&refs, &[], original, content_root, path)?;
+                    write_file(content_root, path, vmat.as_bytes())?;
+                    done.results.push(MaterialResult { material: base.to_string(), path: path.clone(), color: None, size: (0, 0), resized: false, is_new: false });
+                }
+                continue;
+            };
             let src = native(original, path);
             let text = std::fs::read_to_string(&src)
                 .map_err(|_| Error::msg(format!("The source of {path} wasn't extracted. Extract the hero again.")))?;
@@ -344,6 +394,7 @@ pub fn apply(
             let (dir, st) = path.trim_end_matches(".vmat").rsplit_once('/').unwrap_or(("materials", path));
             let new_color = format!("{dir}/{st}_dms_color.png");
             let (vmat, refs) = with_color(&text, &new_color);
+            let vmat = with_scroll(&vmat, f.scroll, f.scroll_steps);
             write_file(content_root, &new_color, &png)?;
             copy_refs(&refs, std::slice::from_ref(&new_color), original, content_root, path)?;
             write_file(content_root, path, vmat.as_bytes())?;
@@ -411,6 +462,7 @@ pub fn apply(
         if let Some(e) = flat_err {
             return Err(e);
         }
+        let vmat = with_scroll(&vmat, f.scroll, f.scroll_steps);
         copy_refs(&refs, &written, original, content_root, &path)?;
         write_file(content_root, &path, vmat.as_bytes())?;
         done.new_paths.insert(f.name.clone(), path.clone());
@@ -422,6 +474,20 @@ pub fn apply(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn scroll_sets_the_shaders_scroll_speed() {
+        let vmat = "\"Layer0\"\n{\n\t\"shader\"\t\"pbr.vfx\"\n\t\"g_flAlbedoScrollQuantize1\"\t\"0\"\n\t\"g_vAlbedoScrollSpeed1\"\t\"[0.000000 0.000000 0.000000 0.000000]\"\n\t\"TextureColor1\"\t\"m/c.png\"\n}\n";
+        let out = with_scroll(vmat, Some([0.2, -0.05]), Some(8.0));
+        assert!(out.contains("\"g_vAlbedoScrollSpeed1\"\t\"[0.200000 -0.050000 0.000000 0.000000]\""), "{out}");
+        assert!(out.contains("\"g_flAlbedoScrollQuantize1\"\t\"8\""));
+        assert_eq!(out.matches("g_vAlbedoScrollSpeed1").count(), 1);
+        // Missing keys are added; no scroll = unchanged.
+        let bare = "\"Layer0\"\n{\n\t\"shader\"\t\"pbr.vfx\"\n}\n";
+        let added = with_scroll(bare, Some([0.5, 0.0]), None);
+        assert!(added.contains("g_vAlbedoScrollSpeed1") && added.contains("[0.500000 0.000000"), "{added}");
+        assert_eq!(with_scroll(vmat, None, None), vmat);
+    }
 
     const VMAT: &str = "\"Layer0\"\n{\n\t\"shader\"\t\"pbr.vfx\"\n\t\"F_SELF_ILLUM\"\t\"1\"\n\t\"TextureRoughness1\"\t\"[0.972549 0.972549 0.972549 0.000000]\"\n\t\"TextureAltColor1\"\t\"materials/default/default_color.tga\"\n\t\"TextureColor1\"\t\"models/h/materials/h_color.png\"\n\t\"TextureNprTramsissiveColor1\"\t\"models/h/materials/h_color.png\"\n\t\"TextureSelfIllumMask1\"\t\"models/h/materials/h_emissive.png\"\n\t\"Compiled Textures\"\n\t{\n\t\t\"g_tColor\"\t\"models/h/materials/h_color_png_1.vtex\"\n\t}\n}\n";
 

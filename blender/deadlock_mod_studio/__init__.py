@@ -25,7 +25,7 @@ from mathutils import Vector
 from mathutils.bvhtree import BVHTree
 from mathutils.interpolate import poly_3d_calc
 
-ADDON_VERSION = "0.1.27"
+ADDON_VERSION = "0.1.28"
 MAX_WEIGHTS = 4
 # Fairness rule: a custom model stays close to the original's size. Smaller
 # is the unfair direction; accessories that stick out make you easier to see.
@@ -1386,6 +1386,77 @@ class DMS_OT_keep_original(bpy.types.Operator):
         return {"FINISHED"}
 
 
+# ------------------------------------------------------- circular UVs ---
+# A disc or ring unwrapped "unrolled": U goes once around the centre and V
+# from the centre (top of the texture) to the rim (bottom). Scrolling U then
+# turns the texture around the centre; scrolling V pours it in or out.
+
+def circular_uvs(obj):
+    import math
+    me = obj.data
+    if obj.mode == "EDIT":
+        bpy.ops.object.mode_set(mode="OBJECT")
+        sel = [p for p in me.polygons if p.select] or list(me.polygons)
+    else:
+        sel = list(me.polygons)
+    if not sel:
+        raise RuntimeError("The object has no faces")
+    verts = {i for p in sel for i in p.vertices}
+    co = {i: me.vertices[i].co.copy() for i in verts}
+    centre = sum(co.values(), Vector()) / len(co)
+    # The disc's facing: the average face normal (area-weighted).
+    n = sum((p.normal * p.area for p in sel), Vector())
+    n = n.normalized() if n.length > 1e-9 else Vector((0, 0, 1))
+    a = n.orthogonal().normalized()
+    b = n.cross(a).normalized()
+    rmax = max(((c - centre) - n * (c - centre).dot(n)).length for c in co.values()) or 1.0
+    uv = me.uv_layers.active or me.uv_layers.new(name="UVMap")
+    for p in sel:
+        pts = []
+        for li in p.loop_indices:
+            d = co[me.loops[li].vertex_index] - centre
+            d -= n * d.dot(n)
+            r = d.length
+            ang = (math.atan2(d.dot(b), d.dot(a)) / (2 * math.pi)) % 1.0
+            pts.append([li, ang, r])
+        # A face across the start of the circle: keep its U together.
+        us = [q[1] for q in pts if q[2] > 1e-6 * rmax]
+        if us and max(us) - min(us) > 0.5:
+            for q in pts:
+                if q[1] < 0.5:
+                    q[1] += 1.0
+        # The centre point has no angle of its own: the face's average.
+        mean = sum(q[1] for q in pts if q[2] > 1e-6 * rmax) / max(1, sum(1 for q in pts if q[2] > 1e-6 * rmax))
+        for li, u, r in pts:
+            uv.data[li].uv = ((mean if r <= 1e-6 * rmax else u), 1.0 - r / rmax)
+    return len(sel)
+
+
+class DMS_OT_circular_uvs(bpy.types.Operator):
+    """Unwrap the selected disc or ring around its centre: U goes around, V from the centre out. Use with a texture unrolled into a strip; Scroll X then spins it"""
+
+    bl_idname = "dms.circular_uvs"
+    bl_label = "Circular UVs"
+    bl_options = {"REGISTER", "UNDO"}
+
+    @classmethod
+    def poll(cls, context):
+        return context.object is not None and context.object.type == "MESH"
+
+    def execute(self, context):
+        obj = context.object
+        was_edit = obj.mode == "EDIT"
+        try:
+            n = circular_uvs(obj)
+        except RuntimeError as e:
+            self.report({"ERROR"}, str(e))
+            return {"CANCELLED"}
+        if was_edit:
+            bpy.ops.object.mode_set(mode="EDIT")
+        self.report({"INFO"}, f"Circular UVs on {n} faces. Centre = top of the texture, rim = bottom")
+        return {"FINISHED"}
+
+
 class DMS_OT_fix_parent(bpy.types.Operator):
     """Hang this object from the rig itself instead of one of its bones, putting it back in place"""
 
@@ -1689,6 +1760,10 @@ def send_to_app(scene=None):
         mat = bpy.data.materials[name]
         img = base_color_image(mat)
         entry = {"name": name, "color": None, "new": not hero_material(name, scene)}
+        sx, sy = float(getattr(mat, "dms_scroll_x", 0.0)), float(getattr(mat, "dms_scroll_y", 0.0))
+        if sx or sy:
+            entry["scroll"] = [sx, sy]
+            entry["scrollSteps"] = float(getattr(mat, "dms_scroll_steps", 0.0))
         bsdf = principled(mat)
         if entry["new"]:
             # A new material: plain values from the shader where no texture is plugged in.
@@ -1880,6 +1955,20 @@ class DMS_PT_main(bpy.types.Panel):
         for a in bpy.data.actions[:4]:
             row.operator("dms.pose", text=a.name.replace("primary_", "").replace("_", " ")).action = a.name
 
+        # Moving materials
+        box = layout.box()
+        box.label(text="Moving texture", icon="UV_SYNC_SELECT")
+        mat = context.object.active_material if context.object and context.object.type == "MESH" else None
+        if mat is None:
+            box.label(text="Select a part to set its material moving")
+        else:
+            box.label(text=mat.name, icon="MATERIAL")
+            row = box.row(align=True)
+            row.prop(mat, "dms_scroll_x", text="Scroll X")
+            row.prop(mat, "dms_scroll_y", text="Scroll Y")
+            box.prop(mat, "dms_scroll_steps", text="Steps (0 = smooth)")
+            box.operator("dms.circular_uvs", text="Circular UVs (spin by Scroll X)", icon="MESH_CIRCLE")
+
         # Textures
         box = layout.box()
         box.label(text="Textures", icon="TEXTURE")
@@ -1926,6 +2015,7 @@ class DMS_PT_main(bpy.types.Panel):
 
 
 classes = (
+    DMS_OT_circular_uvs,
     DMS_OT_keep_original,
     DMS_OT_follow_skin,
     DMS_OT_open_project,
@@ -1955,6 +2045,9 @@ classes = (
 
 
 def register():
+    bpy.types.Material.dms_scroll_x = FloatProperty(name="Scroll X", description="How fast the colour texture slides across (texture widths per second; with Circular UVs: turns per second)", default=0.0, soft_min=-2.0, soft_max=2.0, step=1, precision=3)
+    bpy.types.Material.dms_scroll_y = FloatProperty(name="Scroll Y", description="How fast the colour texture slides up/down (texture heights per second; with Circular UVs: in/out)", default=0.0, soft_min=-2.0, soft_max=2.0, step=1, precision=3)
+    bpy.types.Material.dms_scroll_steps = FloatProperty(name="Steps", description="Move in jumps instead of smoothly (0 = smooth)", default=0.0, min=0.0, soft_max=30.0)
     for c in classes:
         bpy.utils.register_class(c)
 
@@ -1962,3 +2055,6 @@ def register():
 def unregister():
     for c in reversed(classes):
         bpy.utils.unregister_class(c)
+    for k in ("dms_scroll_x", "dms_scroll_y", "dms_scroll_steps"):
+        if hasattr(bpy.types.Material, k):
+            delattr(bpy.types.Material, k)
