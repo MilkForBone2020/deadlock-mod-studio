@@ -194,6 +194,32 @@ fn add_joints(d: &mut dmx::Dmx, model: usize, wanted: &[String], glb: &HashMap<S
     Ok(())
 }
 
+/// Compiler-made bones (`$cloth_...`, named with a `$`) used by `meshes`,
+/// each mapped to the nearest bone the model source has (by rest position).
+fn compiler_bone_aliases(meshes: &[&SkinnedMesh], existing: &HashSet<String>, glb: &HashMap<String, (Option<String>, Mat4)>) -> HashMap<String, String> {
+    let mut out = HashMap::new();
+    let pos = |m: &Mat4| [m[0][3], m[1][3], m[2][3]];
+    let real: Vec<(&String, [f64; 3])> = glb.iter().filter(|(n, _)| existing.contains(*n) && !n.starts_with('$')).map(|(n, (_, m))| (n, pos(m))).collect();
+    for m in meshes {
+        for b in &m.bones {
+            if !b.starts_with('$') || existing.contains(b) || out.contains_key(b) {
+                continue;
+            }
+            let Some((_, bm)) = glb.get(b) else { continue };
+            let p = pos(bm);
+            let near = real.iter().min_by(|x, y| {
+                let dx = (x.1[0] - p[0]).powi(2) + (x.1[1] - p[1]).powi(2) + (x.1[2] - p[2]).powi(2);
+                let dy = (y.1[0] - p[0]).powi(2) + (y.1[1] - p[1]).powi(2) + (y.1[2] - p[2]).powi(2);
+                dx.partial_cmp(&dy).unwrap_or(std::cmp::Ordering::Equal)
+            });
+            if let Some((n, _)) = near {
+                out.insert(b.clone(), (*n).clone());
+            }
+        }
+    }
+    out
+}
+
 /// `r` turned so its X axis points along `dir`, keeping the old axis that is
 /// most across `dir` as Y. Unchanged if `dir` is too short.
 fn along_x(r: &M3, dir: [f64; 3]) -> M3 {
@@ -367,11 +393,16 @@ pub fn swap_with_bones(original: &[u8], meshes: &[&SkinnedMesh], materials: &Has
     let mut d = dmx::parse(original)?;
     let model = d.elements[0].element("model").ok_or_else(|| Error::msg("DMX has no model"))?;
     let existing: HashSet<String> = d.elements[model].elements("jointList").iter().map(|&i| d.elements[i].name.clone()).collect();
+    // Bones the compiler makes for vertex cloth ($cloth_m1p47...) are in the
+    // compiled skeleton (so on meshes copied from the hero) but not in the
+    // model source: their weights go to the nearest real bone.
+    let alias = compiler_bone_aliases(meshes, &existing, glb_joints);
+    let real = |b: &str| -> String { alias.get(b).cloned().unwrap_or_else(|| b.to_string()) };
     let mut wanted: Vec<String> = vec![];
     for m in meshes {
         for v in &m.vertices {
             for (j, _) in &v.weights {
-                let b = &m.bones[*j];
+                let b = &real(&m.bones[*j]);
                 if !existing.contains(b) && glb_joints.contains_key(b) && !wanted.contains(b) {
                     wanted.push(b.clone());
                 }
@@ -404,10 +435,19 @@ pub fn swap_with_bones(original: &[u8], meshes: &[&SkinnedMesh], materials: &Has
             nrm.push(to_game_dir(v.normal));
             uv.push(v.uv);
             let mut w4 = [(0i32, 0f32); 4];
-            let kept: Vec<&(usize, f32)> = v.weights.iter().take(4).collect();
-            let total: f32 = kept.iter().map(|x| x.1).sum::<f32>().max(1e-9);
-            for (k, (j, w)) in kept.into_iter().enumerate() {
-                let bone = &m.bones[*j];
+            // (Aliased bones can land on the same real bone: add them up.)
+            let mut merged: Vec<(String, f32)> = vec![];
+            for (j, w) in &v.weights {
+                let b = real(&m.bones[*j]);
+                match merged.iter_mut().find(|x| x.0 == b) {
+                    Some(x) => x.1 += *w,
+                    None => merged.push((b, *w)),
+                }
+            }
+            merged.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+            merged.truncate(4);
+            let total: f32 = merged.iter().map(|x| x.1).sum::<f32>().max(1e-9);
+            for (k, (bone, w)) in merged.iter().enumerate() {
                 let idx = *joint_index.get(bone.as_str()).ok_or_else(|| {
                     Error::msg(format!("{}: bone {bone} isn't in the hero's skeleton (new bones aren't supported yet)", m.object))
                 })?;
