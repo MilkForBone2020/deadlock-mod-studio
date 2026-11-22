@@ -23,6 +23,12 @@ pub struct PreviewMaterial {
     pub roughness: Option<f32>,
     /// Made for this model, from the hero's main material.
     pub is_new: bool,
+    /// Colour texture scroll (U, V per second), when it moves.
+    #[serde(default)]
+    pub scroll: Option<[f32; 2]>,
+    /// Seconds between jumps (0 = smooth).
+    #[serde(default)]
+    pub scroll_step: f32,
 }
 
 #[derive(Serialize, Clone, Debug, PartialEq)]
@@ -89,14 +95,16 @@ pub fn material(vmat: &str, original: &Path) -> PreviewMaterial {
         metal: uv_texture(original, k.get("TextureMetalness1")),
         roughness: k.get("TextureRoughness1").and_then(|v| vec3(v)).map(|v| v[0]),
         is_new: false,
+        scroll: k.get("g_vAlbedoScrollSpeed1").and_then(|v| vec3(v)).map(|v| [v[0], v[1]]).filter(|v| v[0] != 0.0 || v[1] != 0.0),
+        scroll_step: k.get("g_flAlbedoScrollQuantize1").and_then(|v| v.parse().ok()).unwrap_or(0.0),
     }
 }
 
-fn read_materials(returned: &Path) -> Vec<(String, Option<f32>)> {
+fn read_materials(returned: &Path) -> Vec<crate::blender::MaterialFile> {
     std::fs::read(returned.join("manifest.json"))
         .ok()
         .and_then(|b| serde_json::from_slice::<crate::blender::Returned>(&b).ok())
-        .map(|m| m.material_files.into_iter().map(|f| (f.name, f.roughness)).collect())
+        .map(|m| m.material_files)
         .unwrap_or_default()
 }
 
@@ -126,15 +134,21 @@ pub fn info(project_dir: &Path, model: &str, materials: &[String], returned: Opt
             let manifest: crate::blender::Returned = serde_json::from_slice(&std::fs::read(r.join("manifest.json")).map_err(|e| Error::msg(e.to_string()))?)?;
             // New materials look like the hero's main one, minus the maps
             // drawn for the hero's UVs and the glow (as the build makes them).
-            for (mat, rough) in read_materials(r) {
+            for f in read_materials(r) {
+                let (mat, rough) = (f.name.clone(), f.roughness);
                 let b = crate::meshswap::base_material_name(&mat);
-                if out.contains_key(b) {
+                if let Some(pm) = out.get_mut(b) {
+                    // A hero material set moving in Blender.
+                    if f.scroll.is_some() {
+                        pm.scroll = f.scroll;
+                        pm.scroll_step = f.scroll_steps.unwrap_or(0.0);
+                    }
                     continue;
                 }
                 let hero = materials.iter().any(|m| stem(m) == b);
                 let base = main.clone().unwrap_or_default();
                 // A hero material whose source wasn't extracted: outline only.
-                out.insert(if hero { b.to_string() } else { mat }, PreviewMaterial { outline: base.outline, glow: None, color: None, ao: None, metal: None, roughness: rough.or(base.roughness), is_new: !hero });
+                out.insert(if hero { b.to_string() } else { mat }, PreviewMaterial { outline: base.outline, glow: None, color: None, ao: None, metal: None, roughness: rough.or(base.roughness), is_new: !hero, scroll: f.scroll, scroll_step: f.scroll_steps.unwrap_or(0.0) });
             }
             (r.join(&manifest.glb), Some(manifest.sent))
         }

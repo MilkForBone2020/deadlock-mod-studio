@@ -25,7 +25,7 @@ from mathutils import Vector
 from mathutils.bvhtree import BVHTree
 from mathutils.interpolate import poly_3d_calc
 
-ADDON_VERSION = "0.1.28"
+ADDON_VERSION = "0.1.29"
 MAX_WEIGHTS = 4
 # Fairness rule: a custom model stays close to the original's size. Smaller
 # is the unfair direction; accessories that stick out make you easier to see.
@@ -514,6 +514,11 @@ def run_checks(scene=None):
         others = [i.name for i in material_images(bpy.data.materials.get(m)) if i != img]
         if others:
             issues.append(Issue("info", f"Material {m}: only the colour texture is used for now ({', '.join(others[:2])} left out)"))
+    for m in sorted(materials):
+        mat = bpy.data.materials.get(m)
+        st = float(getattr(mat, "dms_scroll_steps", 0.0)) if mat else 0.0
+        if mat and st >= 1.0 and (getattr(mat, "dms_scroll_x", 0.0) or getattr(mat, "dms_scroll_y", 0.0)):
+            issues.append(Issue("warn", f"Material {m}: it jumps only every {st:g} seconds, so it may look still (for a flipbook use Set scroll for flipbook)"))
     if len(materials) > 8:
         issues.append(Issue("warn", f"{len(materials)} materials: each is drawn separately, consider baking some together"))
 
@@ -1432,6 +1437,28 @@ def circular_uvs(obj):
     return len(sel)
 
 
+class DMS_OT_setup_flipbook(bpy.types.Operator):
+    """Set the scroll so the texture plays as a flipbook: frames stacked top to bottom, one jump per frame. Unwrap the part over the top frame only (the top 1/frames of the texture)"""
+
+    bl_idname = "dms.setup_flipbook"
+    bl_label = "Set up flipbook"
+    bl_options = {"REGISTER", "UNDO"}
+
+    def execute(self, context):
+        obj = context.object
+        mat = obj.active_material if obj else None
+        if mat is None:
+            self.report({"ERROR"}, "Select a part with the material first")
+            return {"CANCELLED"}
+        n, fps = max(1, mat.dms_flip_frames), max(0.1, mat.dms_flip_fps)
+        # The game moves the texture by speed × time, held still between
+        # jumps: one jump every 1/fps seconds, each one frame (1/n) long.
+        mat.dms_scroll_y = fps / n
+        mat.dms_scroll_steps = 1.0 / fps
+        self.report({"INFO"}, f"Scroll Y {mat.dms_scroll_y:.3f}, a jump every {mat.dms_scroll_steps:.3f} s: {fps:g} frames a second through {n} frames")
+        return {"FINISHED"}
+
+
 class DMS_OT_circular_uvs(bpy.types.Operator):
     """Unwrap the selected disc or ring around its centre: U goes around, V from the centre out. Use with a texture unrolled into a strip; Scroll X then spins it"""
 
@@ -1966,7 +1993,13 @@ class DMS_PT_main(bpy.types.Panel):
             row = box.row(align=True)
             row.prop(mat, "dms_scroll_x", text="Scroll X")
             row.prop(mat, "dms_scroll_y", text="Scroll Y")
-            box.prop(mat, "dms_scroll_steps", text="Steps (0 = smooth)")
+            box.prop(mat, "dms_scroll_steps", text="Jump every (seconds, 0 = smooth)")
+            sub = box.box()
+            sub.label(text="Flipbook (frames stacked top to bottom)", icon="RENDER_ANIMATION")
+            row = sub.row(align=True)
+            row.prop(mat, "dms_flip_frames", text="Frames")
+            row.prop(mat, "dms_flip_fps", text="FPS")
+            sub.operator("dms.setup_flipbook", text="Set scroll for flipbook", icon="CHECKMARK")
             box.operator("dms.circular_uvs", text="Circular UVs (spin by Scroll X)", icon="MESH_CIRCLE")
 
         # Textures
@@ -2015,6 +2048,7 @@ class DMS_PT_main(bpy.types.Panel):
 
 
 classes = (
+    DMS_OT_setup_flipbook,
     DMS_OT_circular_uvs,
     DMS_OT_keep_original,
     DMS_OT_follow_skin,
@@ -2047,7 +2081,9 @@ classes = (
 def register():
     bpy.types.Material.dms_scroll_x = FloatProperty(name="Scroll X", description="How fast the colour texture slides across (texture widths per second; with Circular UVs: turns per second)", default=0.0, soft_min=-2.0, soft_max=2.0, step=1, precision=3)
     bpy.types.Material.dms_scroll_y = FloatProperty(name="Scroll Y", description="How fast the colour texture slides up/down (texture heights per second; with Circular UVs: in/out)", default=0.0, soft_min=-2.0, soft_max=2.0, step=1, precision=3)
-    bpy.types.Material.dms_scroll_steps = FloatProperty(name="Steps", description="Move in jumps instead of smoothly (0 = smooth)", default=0.0, min=0.0, soft_max=30.0)
+    bpy.types.Material.dms_scroll_steps = FloatProperty(name="Jump every", description="Seconds between jumps (the texture holds still in between); 0 = moves smoothly. Valve uses 0.1-0.2", default=0.0, min=0.0, soft_max=2.0, precision=3, unit="TIME_ABSOLUTE")
+    bpy.types.Material.dms_flip_frames = IntProperty(name="Frames", description="Frames stacked top to bottom in the texture", default=8, min=1, max=64)
+    bpy.types.Material.dms_flip_fps = FloatProperty(name="FPS", description="Frames a second", default=8.0, min=0.1, soft_max=30.0)
     for c in classes:
         bpy.utils.register_class(c)
 
@@ -2055,6 +2091,6 @@ def register():
 def unregister():
     for c in reversed(classes):
         bpy.utils.unregister_class(c)
-    for k in ("dms_scroll_x", "dms_scroll_y", "dms_scroll_steps"):
+    for k in ("dms_scroll_x", "dms_scroll_y", "dms_scroll_steps", "dms_flip_frames", "dms_flip_fps"):
         if hasattr(bpy.types.Material, k):
             delattr(bpy.types.Material, k)

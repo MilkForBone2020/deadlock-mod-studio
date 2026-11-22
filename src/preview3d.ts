@@ -51,6 +51,9 @@ export class PreviewScene {
   private models: THREE.Object3D[] = [];
   private urls: string[] = [];
   private textures = new Map<string, Promise<THREE.Texture | null>>();
+  /** Textures that move like the game's scrolling materials. */
+  private scrolling: { tex: THREE.Texture; speed: [number, number]; step: number; mat: THREE.Material }[] = [];
+  private started = performance.now();
   private gradient = gradientMap();
   private frame = 0;
   private observer: ResizeObserver;
@@ -80,6 +83,12 @@ export class PreviewScene {
       this.timer.update();
       const dt = Math.min(0.1, this.timer.getDelta());
       if (this.playing) this.mixers.forEach((m) => m.update(dt));
+      const now = (performance.now() - this.started) / 1000;
+      for (const s of this.scrolling) {
+        // Like the game: offset = speed × time, time held still between jumps.
+        const t = s.step > 0 ? Math.floor(now / s.step) * s.step : now;
+        s.tex.offset.set((s.speed[0] * t) % 1, (s.speed[1] * t) % 1);
+      }
       this.controls.update();
       this.renderer.render(this.scene, this.camera);
     };
@@ -155,6 +164,15 @@ export class PreviewScene {
     // The original beside yours: Valve's colour texture, not the copy you may have repainted.
     const valve = valveColour ? await this.texture(look?.color, true) : null;
     if (valve) m.map = valve;
+    const sc = look?.scroll;
+    if (sc && m.map && (sc[0] !== 0 || sc[1] !== 0)) {
+      // Its own copy, so other materials sharing the image stay still.
+      const tex = m.map.clone();
+      tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+      tex.needsUpdate = true;
+      m.map = tex;
+      this.scrolling.push({ tex, speed: [sc[0], sc[1]], step: look?.scrollStep ?? 0, mat: m });
+    }
     if (src.alphaTest) m.alphaTest = src.alphaTest;
     const [ao, mask] = await Promise.all([this.texture(look?.ao), this.texture(look?.glow?.mask)]);
     if (ao) {
@@ -261,6 +279,12 @@ export class PreviewScene {
     this.scene.remove(root);
     this.outlines = this.outlines.filter((o) => !isChildOf(o, root));
     this.seeThrough = this.seeThrough.filter((o) => !isChildOf(o, root));
+    const used = new Set<THREE.Material>();
+    root.traverse((o) => {
+      const mm = (o as THREE.Mesh).material;
+      if (mm) (Array.isArray(mm) ? mm : [mm]).forEach((x) => used.add(x));
+    });
+    this.scrolling = this.scrolling.filter((s) => !used.has(s.mat));
   }
 
   /** Play a clip on every model (null: rest pose). */

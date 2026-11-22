@@ -302,6 +302,10 @@ export interface PreviewMaterial {
   metal: string | null;
   roughness: number | null;
   isNew: boolean;
+  /** Colour texture scroll (U, V per second), when it moves. */
+  scroll?: [number, number] | null;
+  /** Seconds between jumps (0 = smooth). */
+  scrollStep?: number;
 }
 
 export interface PreviewInfo {
