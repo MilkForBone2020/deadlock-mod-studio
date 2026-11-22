@@ -29,6 +29,9 @@ pub struct PreviewMaterial {
     /// Seconds between jumps (0 = smooth).
     #[serde(default)]
     pub scroll_step: f32,
+    /// Flipbook with smooth X: [frames, frames per second, X per second].
+    #[serde(default)]
+    pub flipbook: Option<[f32; 3]>,
 }
 
 #[derive(Serialize, Clone, Debug, PartialEq)]
@@ -97,6 +100,7 @@ pub fn material(vmat: &str, original: &Path) -> PreviewMaterial {
         is_new: false,
         scroll: k.get("g_vAlbedoScrollSpeed1").and_then(|v| vec3(v)).map(|v| [v[0], v[1]]).filter(|v| v[0] != 0.0 || v[1] != 0.0),
         scroll_step: k.get("g_flAlbedoScrollQuantize1").and_then(|v| v.parse().ok()).unwrap_or(0.0),
+        flipbook: None,
     }
 }
 
@@ -143,12 +147,13 @@ pub fn info(project_dir: &Path, model: &str, materials: &[String], returned: Opt
                         pm.scroll = f.scroll;
                         pm.scroll_step = f.scroll_steps.unwrap_or(0.0);
                     }
+                    pm.flipbook = f.flipbook;
                     continue;
                 }
                 let hero = materials.iter().any(|m| stem(m) == b);
                 let base = main.clone().unwrap_or_default();
                 // A hero material whose source wasn't extracted: outline only.
-                out.insert(if hero { b.to_string() } else { mat }, PreviewMaterial { outline: base.outline, glow: None, color: None, ao: None, metal: None, roughness: rough.or(base.roughness), is_new: !hero, scroll: f.scroll, scroll_step: f.scroll_steps.unwrap_or(0.0) });
+                out.insert(if hero { b.to_string() } else { mat }, PreviewMaterial { outline: base.outline, glow: None, color: None, ao: None, metal: None, roughness: rough.or(base.roughness), is_new: !hero, scroll: f.scroll, scroll_step: f.scroll_steps.unwrap_or(0.0), flipbook: f.flipbook });
             }
             (r.join(&manifest.glb), Some(manifest.sent))
         }

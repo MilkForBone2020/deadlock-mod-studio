@@ -52,7 +52,7 @@ export class PreviewScene {
   private urls: string[] = [];
   private textures = new Map<string, Promise<THREE.Texture | null>>();
   /** Textures that move like the game's scrolling materials. */
-  private scrolling: { tex: THREE.Texture; speed: [number, number]; step: number; mat: THREE.Material }[] = [];
+  private scrolling: { tex: THREE.Texture; speed: [number, number]; step: number; mat: THREE.Material; flip?: [number, number, number] }[] = [];
   private started = performance.now();
   private gradient = gradientMap();
   private frame = 0;
@@ -86,6 +86,11 @@ export class PreviewScene {
       const now = (performance.now() - this.started) / 1000;
       for (const s of this.scrolling) {
         // Like the game: offset = speed × time, time held still between jumps.
+        if (s.flip) {
+          const [n, fps, sx] = s.flip;
+          s.tex.offset.set((sx * now) % 1, (Math.floor(now * fps) / n) % 1);
+          continue;
+        }
         const t = s.step > 0 ? Math.floor(now / s.step) * s.step : now;
         s.tex.offset.set((s.speed[0] * t) % 1, (s.speed[1] * t) % 1);
       }
@@ -165,13 +170,14 @@ export class PreviewScene {
     const valve = valveColour ? await this.texture(look?.color, true) : null;
     if (valve) m.map = valve;
     const sc = look?.scroll;
-    if (sc && m.map && (sc[0] !== 0 || sc[1] !== 0)) {
+    const fb = look?.flipbook ?? undefined;
+    if (m.map && ((sc && (sc[0] !== 0 || sc[1] !== 0)) || fb)) {
       // Its own copy, so other materials sharing the image stay still.
       const tex = m.map.clone();
       tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
       tex.needsUpdate = true;
       m.map = tex;
-      this.scrolling.push({ tex, speed: [sc[0], sc[1]], step: look?.scrollStep ?? 0, mat: m });
+      this.scrolling.push({ tex, speed: [sc?.[0] ?? 0, sc?.[1] ?? 0], step: look?.scrollStep ?? 0, mat: m, flip: fb });
     }
     if (src.alphaTest) m.alphaTest = src.alphaTest;
     const [ao, mask] = await Promise.all([this.texture(look?.ao), this.texture(look?.glow?.mask)]);

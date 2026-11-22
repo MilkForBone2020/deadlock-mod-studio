@@ -18,14 +18,14 @@ import time
 
 import bmesh
 import bpy
-from bpy.props import EnumProperty, IntProperty, StringProperty, FloatProperty
+from bpy.props import BoolProperty, EnumProperty, IntProperty, StringProperty, FloatProperty
 
 from . import fit, physics
 from mathutils import Vector
 from mathutils.bvhtree import BVHTree
 from mathutils.interpolate import poly_3d_calc
 
-ADDON_VERSION = "0.1.29"
+ADDON_VERSION = "0.1.30"
 MAX_WEIGHTS = 4
 # Fairness rule: a custom model stays close to the original's size. Smaller
 # is the unfair direction; accessories that stick out make you easier to see.
@@ -1791,6 +1791,9 @@ def send_to_app(scene=None):
         if sx or sy:
             entry["scroll"] = [sx, sy]
             entry["scrollSteps"] = float(getattr(mat, "dms_scroll_steps", 0.0))
+        if getattr(mat, "dms_flip_smooth_x", False):
+            # Frames step, X slides smoothly: the app writes a live formula.
+            entry["flipbook"] = [float(mat.dms_flip_frames), float(mat.dms_flip_fps), sx]
         bsdf = principled(mat)
         if entry["new"]:
             # A new material: plain values from the shader where no texture is plugged in.
@@ -1999,7 +2002,11 @@ class DMS_PT_main(bpy.types.Panel):
             row = sub.row(align=True)
             row.prop(mat, "dms_flip_frames", text="Frames")
             row.prop(mat, "dms_flip_fps", text="FPS")
-            sub.operator("dms.setup_flipbook", text="Set scroll for flipbook", icon="CHECKMARK")
+            sub.prop(mat, "dms_flip_smooth_x", text="Smooth X (frames step, Scroll X slides)")
+            if not mat.dms_flip_smooth_x:
+                sub.operator("dms.setup_flipbook", text="Set scroll for flipbook", icon="CHECKMARK")
+            else:
+                sub.label(text=f"{mat.dms_flip_frames} frames at {mat.dms_flip_fps:g} FPS; Scroll X {mat.dms_scroll_x:g}/s", icon="INFO")
             box.operator("dms.circular_uvs", text="Circular UVs (spin by Scroll X)", icon="MESH_CIRCLE")
 
         # Textures
@@ -2084,6 +2091,7 @@ def register():
     bpy.types.Material.dms_scroll_steps = FloatProperty(name="Jump every", description="Seconds between jumps (the texture holds still in between); 0 = moves smoothly. Valve uses 0.1-0.2", default=0.0, min=0.0, soft_max=2.0, precision=3, unit="TIME_ABSOLUTE")
     bpy.types.Material.dms_flip_frames = IntProperty(name="Frames", description="Frames stacked top to bottom in the texture", default=8, min=1, max=64)
     bpy.types.Material.dms_flip_fps = FloatProperty(name="FPS", description="Frames a second", default=8.0, min=0.1, soft_max=30.0)
+    bpy.types.Material.dms_flip_smooth_x = BoolProperty(name="Smooth X", description="Play the frames as a flipbook while Scroll X slides smoothly (a live formula in the material; Scroll Y and Jump every are not used)", default=False)
     for c in classes:
         bpy.utils.register_class(c)
 
@@ -2091,6 +2099,6 @@ def register():
 def unregister():
     for c in reversed(classes):
         bpy.utils.unregister_class(c)
-    for k in ("dms_scroll_x", "dms_scroll_y", "dms_scroll_steps", "dms_flip_frames", "dms_flip_fps"):
+    for k in ("dms_scroll_x", "dms_scroll_y", "dms_scroll_steps", "dms_flip_frames", "dms_flip_fps", "dms_flip_smooth_x"):
         if hasattr(bpy.types.Material, k):
             delattr(bpy.types.Material, k)

@@ -236,6 +236,48 @@ pub fn from_template(
 /// Set the colour texture's scroll speed (U, V per second) and stepping, the
 /// way Lash's sparkles move. Nothing changes when `scroll` is None.
 pub fn with_scroll(vmat: &str, scroll: Option<[f32; 2]>, steps: Option<f32>) -> String {
+    with_motion(vmat, scroll, steps, None)
+}
+
+/// Scroll, or a flipbook whose frames (stacked top to bottom) step while X
+/// slides smoothly: a live formula on the texture offset (texture
+/// transforms on, as in Harrow's leech material), since one scroll setting
+/// can't step one direction and slide the other.
+pub fn with_motion(vmat: &str, scroll: Option<[f32; 2]>, steps: Option<f32>, flipbook: Option<[f32; 3]>) -> String {
+    if let Some([frames, fps, sx]) = flipbook {
+        let frames = frames.max(1.0);
+        let fps = fps.max(0.01);
+        let id = "[1.000000 1.000000 0.000000 0.000000]".to_string();
+        let zero = "[0.000000 0.000000 0.000000 0.000000]".to_string();
+        let mut set: Vec<(&str, String)> = vec![
+            ("F_ENABLE_TEXTURE_TRANSFORMS", "1".into()),
+            ("g_vAlbedoScrollSpeed1", zero.clone()),
+            ("g_flAlbedoScrollQuantize1", "0".into()),
+            ("g_vAlbedoTexcoordScale1", id.clone()),
+            ("g_vAlbedoTexcoordOffset1", zero.clone()),
+            ("g_flAlbedoTexcoordRotation1", "0".into()),
+            ("g_vNormalTexcoordScale1", id.clone()),
+            ("g_vNormalTexcoordOffset1", zero.clone()),
+            ("g_flNormalTexcoordRotation1", "0".into()),
+            ("g_vAmbientOcclusionTexcoordScale1", id),
+            ("g_vAmbientOcclusionTexcoordOffset1", zero),
+            ("g_flAmbientOcclusionTexcoordRotation1", "0".into()),
+        ];
+        let (mut out, _) = rewrite(
+            vmat,
+            |k, _| match set.iter().position(|(n, _)| *n == k) {
+                Some(i) => Edit::Set(set.remove(i).1),
+                None => Edit::Keep,
+            },
+            &[],
+        );
+        if !set.is_empty() {
+            let extra: Vec<(String, String)> = set.into_iter().map(|(k, v)| (k.to_string(), v)).collect();
+            out = rewrite(&out, |_, _| Edit::Keep, &extra).0;
+        }
+        let expr = format!("return float2(frac($ent_gametime*{sx}), floor($ent_gametime*{fps})/{frames});");
+        return with_dynamic(&out, "g_vAlbedoTexcoordOffset1", &expr);
+    }
     let Some([u, v]) = scroll else { return vmat.to_string() };
     let speed = format!("[{u:.6} {v:.6} 0.000000 0.000000]");
     let quant = format!("{}", steps.unwrap_or(0.0).max(0.0));
@@ -268,6 +310,20 @@ pub fn with_scroll(vmat: &str, scroll: Option<[f32; 2]>, steps: Option<f32>) -> 
     } else {
         rewrite(&out, |_, _| Edit::Keep, &extra).0
     }
+}
+
+/// Put `key` = `expr` in the material's DynamicParams block (made if missing).
+fn with_dynamic(vmat: &str, key: &str, expr: &str) -> String {
+    let line = format!("\t\t\"{key}\"\t\"{expr}\"\n");
+    if let Some(i) = vmat.find("\"DynamicParams\"") {
+        if let Some(open) = vmat[i..].find('{') {
+            let at = i + open + 1;
+            let at = at + vmat[at..].find('\n').map(|n| n + 1).unwrap_or(0);
+            return format!("{}{}{}", &vmat[..at], line, &vmat[at..]);
+        }
+    }
+    let end = vmat.rfind('}').unwrap_or(vmat.len());
+    format!("{}\t\"DynamicParams\"\n\t{{\n{}\t}}\n{}", &vmat[..end], line, &vmat[end..])
 }
 
 fn linear_to_srgb(c: f32) -> u8 {
@@ -375,12 +431,12 @@ pub fn apply(
         if let Some(path) = hero {
             let Some(color_rel) = &f.color else {
                 // Only made to move: the hero's material as it is, scrolling.
-                if f.scroll.is_some() {
+                if f.scroll.is_some() || f.flipbook.is_some() {
                     let src = native(original, path);
                     let text = std::fs::read_to_string(&src)
                         .map_err(|_| Error::msg(format!("The source of {path} wasn't extracted. Extract the hero again.")))?;
                     let (vmat, refs) = rewrite(&text, |_, _| Edit::Keep, &[]);
-                    let vmat = with_scroll(&vmat, f.scroll, f.scroll_steps);
+                    let vmat = with_motion(&vmat, f.scroll, f.scroll_steps, f.flipbook);
                     copy_refs(&refs, &[], original, content_root, path)?;
                     write_file(content_root, path, vmat.as_bytes())?;
                     done.results.push(MaterialResult { material: base.to_string(), path: path.clone(), color: None, size: (0, 0), resized: false, is_new: false });
@@ -394,7 +450,7 @@ pub fn apply(
             let (dir, st) = path.trim_end_matches(".vmat").rsplit_once('/').unwrap_or(("materials", path));
             let new_color = format!("{dir}/{st}_dms_color.png");
             let (vmat, refs) = with_color(&text, &new_color);
-            let vmat = with_scroll(&vmat, f.scroll, f.scroll_steps);
+            let vmat = with_motion(&vmat, f.scroll, f.scroll_steps, f.flipbook);
             write_file(content_root, &new_color, &png)?;
             copy_refs(&refs, std::slice::from_ref(&new_color), original, content_root, path)?;
             write_file(content_root, path, vmat.as_bytes())?;
@@ -462,7 +518,7 @@ pub fn apply(
         if let Some(e) = flat_err {
             return Err(e);
         }
-        let vmat = with_scroll(&vmat, f.scroll, f.scroll_steps);
+        let vmat = with_motion(&vmat, f.scroll, f.scroll_steps, f.flipbook);
         copy_refs(&refs, &written, original, content_root, &path)?;
         write_file(content_root, &path, vmat.as_bytes())?;
         done.new_paths.insert(f.name.clone(), path.clone());
@@ -487,6 +543,12 @@ mod tests {
         let added = with_scroll(bare, Some([0.5, 0.0]), None);
         assert!(added.contains("g_vAlbedoScrollSpeed1") && added.contains("[0.500000 0.000000"), "{added}");
         assert_eq!(with_scroll(vmat, None, None), vmat);
+        // Flipbook with smooth X: a live offset formula, no plain scroll.
+        let fb = with_motion(vmat, Some([0.2, 1.0]), Some(0.125), Some([8.0, 8.0, 0.2]));
+        assert!(fb.contains("\"F_ENABLE_TEXTURE_TRANSFORMS\"\t\"1\""), "{fb}");
+        assert!(fb.contains("\"g_vAlbedoScrollSpeed1\"\t\"[0.000000 0.000000"));
+        assert!(fb.contains("\"DynamicParams\"") && fb.contains("\"g_vAlbedoTexcoordOffset1\"\t\"return float2(frac($ent_gametime*0.2), floor($ent_gametime*8)/8);\""), "{fb}");
+        assert!(fb.trim_end().ends_with('}') && fb.matches('{').count() == fb.matches('}').count());
     }
 
     const VMAT: &str = "\"Layer0\"\n{\n\t\"shader\"\t\"pbr.vfx\"\n\t\"F_SELF_ILLUM\"\t\"1\"\n\t\"TextureRoughness1\"\t\"[0.972549 0.972549 0.972549 0.000000]\"\n\t\"TextureAltColor1\"\t\"materials/default/default_color.tga\"\n\t\"TextureColor1\"\t\"models/h/materials/h_color.png\"\n\t\"TextureNprTramsissiveColor1\"\t\"models/h/materials/h_color.png\"\n\t\"TextureSelfIllumMask1\"\t\"models/h/materials/h_emissive.png\"\n\t\"Compiled Textures\"\n\t{\n\t\t\"g_tColor\"\t\"models/h/materials/h_color_png_1.vtex\"\n\t}\n}\n";

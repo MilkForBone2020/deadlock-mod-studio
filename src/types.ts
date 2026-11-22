@@ -306,6 +306,8 @@ export interface PreviewMaterial {
   scroll?: [number, number] | null;
   /** Seconds between jumps (0 = smooth). */
   scrollStep?: number;
+  /** Flipbook with smooth X: [frames, frames per second, X per second]. */
+  flipbook?: [number, number, number] | null;
 }
 
 export interface PreviewInfo {
