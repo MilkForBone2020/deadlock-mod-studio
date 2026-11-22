@@ -194,6 +194,34 @@ fn add_joints(d: &mut dmx::Dmx, model: usize, wanted: &[String], glb: &HashMap<S
     Ok(())
 }
 
+/// Every original vertex with `cloth_enable` > 0, in any of the part's
+/// meshes: (position, (joint, weight) up to 4, cloth_enable).
+fn cloth_reference(d: &dmx::Dmx) -> Vec<([f64; 3], Vec<(i32, f32)>, f32)> {
+    let mut out = vec![];
+    for me in d.find_type("DmeMesh") {
+        let Some(vdi) = d.elements[me].element("currentState") else { continue };
+        let vd = &d.elements[vdi];
+        let (Some(cl), Some(p)) = (stream(vd, "cloth_enable", 1), stream(vd, "position", 3)) else { continue };
+        let jc = match vd.get("jointCount") {
+            Some(Attr::Raw { bytes, .. }) if bytes.len() == 4 => i32::from_le_bytes(bytes[..4].try_into().unwrap()).max(0) as usize,
+            _ => 0,
+        };
+        let bi = vd.get("blendindices$0").map(dmx::ints).unwrap_or_default();
+        let bw = vd.get("blendweights$0").map(dmx::floats).unwrap_or_default();
+        for (k, &pi) in p.indices.iter().enumerate() {
+            let c = cl.indices.get(k).and_then(|&ci| cl.values.get(ci as usize)).copied().unwrap_or(0.0);
+            if c <= 0.0 {
+                continue;
+            }
+            let pi = pi as usize;
+            let point = [p.values[pi * 3] as f64, p.values[pi * 3 + 1] as f64, p.values[pi * 3 + 2] as f64];
+            let ws: Vec<(i32, f32)> = (0..jc).filter_map(|t| Some((*bi.get(pi * jc + t)?, *bw.get(pi * jc + t)?))).filter(|w| w.1 > 0.0).collect();
+            out.push((point, ws, c));
+        }
+    }
+    out
+}
+
 /// Compiler-made bones (`$cloth_...`, named with a `$`) used by `meshes`,
 /// each mapped to the nearest bone the model source has (by rest position).
 fn compiler_bone_aliases(meshes: &[&SkinnedMesh], existing: &HashSet<String>, glb: &HashMap<String, (Option<String>, Mat4)>) -> HashMap<String, String> {
@@ -422,6 +450,13 @@ pub fn swap_with_bones(original: &[u8], meshes: &[&SkinnedMesh], materials: &Has
     let mesh_el = *d.find_type("DmeMesh").first().ok_or_else(|| Error::msg("DMX has no mesh"))?;
     let vd_el = d.elements[mesh_el].element("currentState").ok_or_else(|| Error::msg("DMX mesh has no vertex data"))?;
 
+    // Vertex cloth (Bebop's trousers): original vertices with cloth_enable,
+    // with their real-bone weights. A new vertex that sat on a cloth bone
+    // takes both from the nearest of these, so the cloth is rebuilt.
+    let cloth_ref = cloth_reference(&d);
+    let cloth_grid = (!cloth_ref.is_empty()).then(|| Grid::new(cloth_ref.iter().map(|c| c.0).collect()));
+    let mut cloth: Vec<f32> = vec![];
+
     // Gather the new geometry in game space.
     let mut pos = vec![];
     let mut nrm = vec![];
@@ -435,6 +470,19 @@ pub fn swap_with_bones(original: &[u8], meshes: &[&SkinnedMesh], materials: &Has
             nrm.push(to_game_dir(v.normal));
             uv.push(v.uv);
             let mut w4 = [(0i32, 0f32); 4];
+            let on_cloth = v.weights.iter().any(|(j, w)| *w > 0.0 && alias.contains_key(&m.bones[*j]));
+            if let (true, Some(g)) = (on_cloth, &cloth_grid) {
+                if let Some(k) = g.nearest(to_game(v.pos)) {
+                    let (_, ws, c) = &cloth_ref[k];
+                    for (slot, w) in ws.iter().take(4).enumerate() {
+                        w4[slot] = *w;
+                    }
+                    infl.push(w4);
+                    cloth.push(*c);
+                    continue;
+                }
+            }
+            cloth.push(0.0);
             // (Aliased bones can land on the same real bone: add them up.)
             let mut merged: Vec<(String, f32)> = vec![];
             for (j, w) in &v.weights {
@@ -583,6 +631,11 @@ pub fn swap_with_bones(original: &[u8], meshes: &[&SkinnedMesh], materials: &Has
         format.push("color$0");
         attrs.push(("color$0".into(), dmx::f32_array(dmx::T_VEC4, &c.iter().flat_map(|x| *x).collect::<Vec<f32>>())));
         attrs.push(("color$0Indices".into(), dmx::i32_array(dmx::T_INT, &ident)));
+    }
+    if cloth.iter().any(|c| *c > 0.0) {
+        format.push("cloth_enable$0");
+        attrs.push(("cloth_enable$0".into(), dmx::f32_array(dmx::T_FLOAT, &cloth)));
+        attrs.push(("cloth_enable$0Indices".into(), dmx::i32_array(dmx::T_INT, &ident)));
     }
     attrs[0].1 = Attr::StrArray(format.iter().map(|s| s.to_string()).collect());
     d.elements[vd_el].attrs = attrs;
