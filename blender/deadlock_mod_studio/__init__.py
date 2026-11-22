@@ -25,7 +25,7 @@ from mathutils import Vector
 from mathutils.bvhtree import BVHTree
 from mathutils.interpolate import poly_3d_calc
 
-ADDON_VERSION = "0.1.30"
+ADDON_VERSION = "0.1.31"
 MAX_WEIGHTS = 4
 # Fairness rule: a custom model stays close to the original's size. Smaller
 # is the unfair direction; accessories that stick out make you easier to see.
@@ -389,13 +389,79 @@ def signed_volume(obj):
     return total
 
 
-def fix_normals(obj):
-    """Point every face outward (Blender's Recalculate Outside)."""
+def closed_pieces(bm):
+    """The mesh's connected pieces that are closed (every edge between two
+    faces), each as a list of faces. Open surfaces (a screen band, a disc, a
+    cape) have no inside, so they can't be told to be inside out."""
+    seen = set()
+    out = []
+    for f in bm.faces:
+        if f.index in seen:
+            continue
+        piece, stack = [], [f]
+        seen.add(f.index)
+        while stack:
+            g = stack.pop()
+            piece.append(g)
+            for e in g.edges:
+                for h in e.link_faces:
+                    if h.index not in seen:
+                        seen.add(h.index)
+                        stack.append(h)
+        edges = {e for g in piece for e in g.edges}
+        if edges and all(len(e.link_faces) == 2 for e in edges):
+            out.append(piece)
+    return out
+
+
+def piece_volume(piece):
+    """Signed volume of a closed piece, measured from its own middle (so it
+    doesn't depend on where the origin is): negative = inside out."""
+    verts = {v for f in piece for v in f.verts}
+    c = sum((v.co for v in verts), Vector()) / max(1, len(verts))
+    total = 0.0
+    for f in piece:
+        vs = [v.co - c for v in f.verts]
+        for k in range(1, len(vs) - 1):
+            total += vs[0].dot(vs[k].cross(vs[k + 1])) / 6.0
+    return total
+
+
+def inside_out_pieces(obj):
+    """(faces in inside-out closed pieces, faces in closed pieces)."""
     import bmesh
 
     bm = bmesh.new()
     bm.from_mesh(obj.data)
-    bmesh.ops.recalc_face_normals(bm, faces=bm.faces)
+    bm.faces.ensure_lookup_table()
+    mirrored = obj.matrix_world.determinant() < 0
+    bad = total = 0
+    for piece in closed_pieces(bm):
+        vol = piece_volume(piece)
+        if mirrored:
+            vol = -vol
+        total += len(piece)
+        if vol < 0:
+            bad += len(piece)
+    bm.free()
+    return bad, total
+
+
+def fix_normals(obj):
+    """Turn the faces of inside-out closed pieces outward. Open surfaces are
+    left as they are (there's no outside to point at)."""
+    import bmesh
+
+    bm = bmesh.new()
+    bm.from_mesh(obj.data)
+    mirrored = obj.matrix_world.determinant() < 0
+    flip = []
+    for piece in closed_pieces(bm):
+        vol = piece_volume(piece)
+        if (vol < 0) != mirrored:
+            flip.extend(piece)
+    if flip:
+        bmesh.ops.reverse_faces(bm, faces=flip)
     bm.to_mesh(obj.data)
     bm.free()
     obj.data.update()
@@ -480,7 +546,7 @@ def run_checks(scene=None):
                 plan = follow_skin_plan(o, arm, skin_cache)
                 if plan and plan[2] >= 0.8 and plan[3] > 0.04:
                     issues.append(Issue("warn", f"{o.name}: sits on {plan[0].name} but follows different bones, so it can poke through when the body bends", "follow_skin", o.name))
-        if o.name.split(".")[0] not in parts and signed_volume(o) < 0:
+        if o.name.split(".")[0] not in parts and inside_out_pieces(o)[0] > 0:
             issues.append(Issue("error", f"{o.name}: faces point inward (inside out). The game hides back faces, so you'd see through it", "fix_normals", o.name))
         tris += sum(len(p.vertices) - 2 for p in o.data.polygons)
         if not o.material_slots or not any(s.material for s in o.material_slots):
@@ -1149,8 +1215,6 @@ class DMS_OT_fix_normals(bpy.types.Operator):
         if mode != "OBJECT":
             bpy.ops.object.mode_set(mode="OBJECT")
         fix_normals(obj)
-        if signed_volume(obj) < 0:
-            obj.data.flip_normals()
         store_issues(context.scene, run_checks(context.scene))
         self.report({"INFO"}, f"{obj.name}: faces point outward")
         return {"FINISHED"}
