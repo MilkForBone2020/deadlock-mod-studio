@@ -936,10 +936,22 @@ impl Library {
         let target = target.to_lowercase().replace('\\', "/");
         let p = self.project_mut(id)?;
         if let Some(it) = p.items.iter_mut().find(|i| i.target == target) {
+            if it.source != source {
+                // Edits were made on the old file's timeline.
+                it.edit = None;
+            }
             it.source = source.to_string();
         } else {
-            p.items.push(crate::csdk::SoundJob { target, source: source.to_string(), volume_db: 0.0 });
+            p.items.push(crate::csdk::SoundJob { target, source: source.to_string(), volume_db: 0.0, edit: None });
         }
+        self.save()
+    }
+
+    /// Save the audio editor's edits for one sound (None or empty clears them).
+    pub fn set_item_edit(&mut self, id: &str, target: &str, edit: Option<crate::audio::AudioEdit>) -> Result<()> {
+        let p = self.project_mut(id)?;
+        let it = p.items.iter_mut().find(|i| i.target == target).ok_or_else(|| Error::msg("That sound isn't in this project"))?;
+        it.edit = edit.filter(|e| !e.is_empty());
         self.save()
     }
 

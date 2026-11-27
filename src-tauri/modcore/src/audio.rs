@@ -8,7 +8,7 @@
 //! sounds from clipping.
 
 use crate::{Error, IoCtx, Result};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::path::Path;
 use symphonia::core::audio::SampleBuffer;
 use symphonia::core::codecs::DecoderOptions;
@@ -412,5 +412,194 @@ mod tests {
         let lm = measure(&decode_file(m).unwrap());
         assert_eq!(lv, lm);
         assert!(lv.duration_secs > 1.0);
+    }
+}
+
+// ------------------------------------------------------------ editing ---
+
+/// Edits on my file, kept as a recipe (the file itself never changes).
+/// Times are seconds in my file as imported.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct AudioEdit {
+    /// Start of the part kept.
+    #[serde(default)]
+    pub start: f64,
+    /// End of the part kept (None: to the end of the file).
+    #[serde(default)]
+    pub end: Option<f64>,
+    /// Ranges cut out, [from, to].
+    #[serde(default)]
+    pub cuts: Vec<[f64; 2]>,
+    /// Volume line: points [time, dB], straight lines between; 0 dB before
+    /// the first and after the last when empty.
+    #[serde(default)]
+    pub volume: Vec<[f64; 2]>,
+    /// Fade in / out at the start and end of the result, in seconds.
+    #[serde(default)]
+    pub fade_in: f64,
+    #[serde(default)]
+    pub fade_out: f64,
+}
+
+impl AudioEdit {
+    pub fn is_empty(&self) -> bool {
+        *self == AudioEdit::default()
+    }
+
+    /// The parts of the file kept, in order: [start, end] minus the cuts.
+    pub fn kept(&self, duration: f64) -> Vec<[f64; 2]> {
+        let a = self.start.clamp(0.0, duration);
+        let b = self.end.unwrap_or(duration).clamp(a, duration);
+        let mut cuts: Vec<[f64; 2]> = self.cuts.iter().map(|c| [c[0].min(c[1]), c[0].max(c[1])]).filter(|c| c[1] > c[0]).collect();
+        cuts.sort_by(|x, y| x[0].partial_cmp(&y[0]).unwrap_or(std::cmp::Ordering::Equal));
+        let mut out = vec![];
+        let mut at = a;
+        for c in cuts {
+            if c[1] <= at || c[0] >= b {
+                continue;
+            }
+            if c[0] > at {
+                out.push([at, c[0].min(b)]);
+            }
+            at = at.max(c[1]);
+        }
+        if at < b {
+            out.push([at, b]);
+        }
+        out.retain(|r| r[1] - r[0] > 1e-4);
+        out
+    }
+
+    /// Volume line value (dB) at a time in the file.
+    pub fn gain_db_at(&self, t: f64) -> f64 {
+        let mut pts: Vec<[f64; 2]> = self.volume.clone();
+        pts.sort_by(|x, y| x[0].partial_cmp(&y[0]).unwrap_or(std::cmp::Ordering::Equal));
+        match pts.len() {
+            0 => 0.0,
+            _ if t <= pts[0][0] => pts[0][1],
+            n if t >= pts[n - 1][0] => pts[n - 1][1],
+            _ => {
+                let i = pts.iter().rposition(|p| p[0] <= t).unwrap_or(0);
+                let (p, q) = (pts[i], pts[i + 1]);
+                let f = if q[0] > p[0] { (t - p[0]) / (q[0] - p[0]) } else { 0.0 };
+                p[1] + (q[1] - p[1]) * f
+            }
+        }
+    }
+}
+
+/// Lowest volume-line value: treated as silence.
+pub const EDIT_SILENT_DB: f64 = -60.0;
+
+/// Render the edit: volume line, then the kept parts joined (a few ms of
+/// fade at each join so cuts don't click), then the fades.
+pub fn apply_edit(pcm: &Pcm, e: &AudioEdit) -> Pcm {
+    let ch = pcm.channels.max(1) as usize;
+    let rate = pcm.rate.max(1) as f64;
+    let frames = pcm.frames();
+    let dur = frames as f64 / rate;
+    let gain = |t: f64| {
+        let db = e.gain_db_at(t);
+        if db <= EDIT_SILENT_DB { 0.0 } else { 10f64.powf(db / 20.0) }
+    };
+    let join = ((0.004 * rate) as usize).max(1);
+    let mut out: Vec<f32> = vec![];
+    let kept = e.kept(dur);
+    let n_parts = kept.len();
+    for (pi, r) in kept.iter().enumerate() {
+        let a = (r[0] * rate).round() as usize;
+        let b = ((r[1] * rate).round() as usize).min(frames);
+        let len = b.saturating_sub(a);
+        for f in a..b {
+            let k = f - a;
+            let mut g = gain(f as f64 / rate);
+            if pi > 0 && k < join {
+                g *= k as f64 / join as f64;
+            }
+            if pi + 1 < n_parts && len - k <= join {
+                g *= (len - k) as f64 / join as f64;
+            }
+            for c in 0..ch {
+                out.push((pcm.samples[f * ch + c] as f64 * g) as f32);
+            }
+        }
+    }
+    let total = out.len() / ch;
+    let fi = (e.fade_in.max(0.0) * rate) as usize;
+    let fo = (e.fade_out.max(0.0) * rate) as usize;
+    for f in 0..total {
+        let mut g = 1.0f32;
+        if fi > 0 && f < fi {
+            g *= f as f32 / fi as f32;
+        }
+        if fo > 0 && total - f <= fo {
+            g *= (total - f) as f32 / fo as f32;
+        }
+        if g < 1.0 {
+            for c in 0..ch {
+                out[f * ch + c] *= g;
+            }
+        }
+    }
+    Pcm { rate: pcm.rate, channels: pcm.channels, samples: out }
+}
+
+/// Waveform overview: `buckets` [min, max] pairs over the whole sound.
+pub fn peaks(pcm: &Pcm, buckets: usize) -> Vec<[f32; 2]> {
+    let ch = pcm.channels.max(1) as usize;
+    let frames = pcm.frames();
+    let n = buckets.max(1);
+    (0..n)
+        .map(|i| {
+            let a = i * frames / n;
+            let b = ((i + 1) * frames / n).max(a + 1).min(frames);
+            let (mut lo, mut hi) = (0f32, 0f32);
+            for f in a..b {
+                let mut v = 0f32;
+                for c in 0..ch {
+                    v += pcm.samples[f * ch + c];
+                }
+                v /= ch as f32;
+                lo = lo.min(v);
+                hi = hi.max(v);
+            }
+            [lo, hi]
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod edit_tests {
+    use super::*;
+
+    fn ramp(secs: f64) -> Pcm {
+        let rate = 1000u32;
+        let n = (secs * rate as f64) as usize;
+        Pcm { rate, channels: 1, samples: (0..n).map(|_| 0.5).collect() }
+    }
+
+    #[test]
+    fn trims_cuts_and_volume() {
+        let e = AudioEdit { start: 1.0, end: Some(9.0), cuts: vec![[3.0, 5.0]], ..Default::default() };
+        assert_eq!(e.kept(10.0), vec![[1.0, 3.0], [5.0, 9.0]]);
+        let out = apply_edit(&ramp(10.0), &e);
+        assert!((out.duration_secs() - 6.0).abs() < 0.01, "{}", out.duration_secs());
+        // Volume line: -6 dB at 0, 0 dB at 10, so about -3 dB at 5 s.
+        let v = AudioEdit { volume: vec![[0.0, -6.0], [10.0, 0.0]], ..Default::default() };
+        assert!((v.gain_db_at(5.0) + 3.0).abs() < 1e-9);
+        let out = apply_edit(&ramp(10.0), &v);
+        assert!((out.samples[5000] - 0.5 * 10f32.powf(-3.0 / 20.0)).abs() < 1e-3);
+        // Silence at the bottom of the line.
+        let s = AudioEdit { volume: vec![[0.0, -60.0]], ..Default::default() };
+        assert!(apply_edit(&ramp(1.0), &s).samples.iter().all(|x| *x == 0.0));
+        // Fades.
+        let f = AudioEdit { fade_in: 1.0, fade_out: 1.0, ..Default::default() };
+        let out = apply_edit(&ramp(4.0), &f);
+        assert!(out.samples[0] == 0.0 && (out.samples[2000] - 0.5).abs() < 1e-6 && out.samples[3999] < 0.01);
+        assert!(AudioEdit::default().is_empty());
+        let p = peaks(&ramp(1.0), 10);
+        assert_eq!(p.len(), 10);
+        assert!((p[3][1] - 0.5).abs() < 1e-6);
     }
 }

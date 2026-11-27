@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { ApplyReport, BlenderInstall, Returned, BuildResult, ExtractResult, HeroInfo, Level, ModelBuildResult, ModelHero, ModelProject, ModelSummary, ModMeta, Pack, PhysicsTuning, PreviewInfo, IconBuildResult, IconHero, IconProject, IconSlot, Overview, Profile, SafeModeEvent, SoundProject, SoundSearch, SoundUse } from "./types";
+import type { ApplyReport, AudioEdit, Waveform, BlenderInstall, Returned, BuildResult, ExtractResult, HeroInfo, Level, ModelBuildResult, ModelHero, ModelProject, ModelSummary, ModMeta, Pack, PhysicsTuning, PreviewInfo, IconBuildResult, IconHero, IconProject, IconSlot, Overview, Profile, SafeModeEvent, SoundProject, SoundSearch, SoundUse } from "./types";
 import { mockApi } from "./mock";
 
 /** False when the UI is opened in a plain browser (`npm run dev`) for design work. */
@@ -50,6 +50,10 @@ const tauriApi = {
   setVoiceMute: (id: string, hero: string, slot: number, on: boolean) => invoke<void>("set_voice_mute", { id, hero, slot, on }),
   audioLevel: (kind: "game" | "file", path: string) => invoke<Level>("audio_level", { kind, path }),
   audioBytes: (kind: "game" | "file", path: string) => invoke<ArrayBuffer>("audio_bytes", { kind, path }),
+  audioPeaks: (path: string, buckets: number) => invoke<Waveform>("audio_peaks", { path, buckets }),
+  renderSoundPreview: (target: string, source: string, volumeDb: number, edit: AudioEdit | null) =>
+    invoke<ArrayBuffer>("render_sound_preview", { target, source, volumeDb, edit }),
+  setItemEdit: (id: string, target: string, edit: AudioEdit | null) => invoke<void>("set_item_edit", { id, target, edit }),
   detectCsdk: () => invoke<string | null>("detect_csdk"),
   setCsdkDir: (path: string) => invoke<void>("set_csdk_dir", { path }),
   createSoundProject: (name: string, hero: string) => invoke<SoundProject>("create_sound_project", { name, hero }),

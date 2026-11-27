@@ -70,6 +70,9 @@ pub struct SoundJob {
     /// original; capped at audio::MAX_BOOST_DB.
     #[serde(default)]
     pub volume_db: f64,
+    /// Edits made in the app's audio editor.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub edit: Option<audio::AudioEdit>,
 }
 
 #[derive(Serialize, Clone, Debug)]
@@ -141,6 +144,24 @@ pub fn addon_name(slug: &str) -> String {
 /// Build one VPK from `jobs`. `game_dir` is Deadlock's install (for the
 /// originals), `out_vpk` where the packed mod is written.
 #[allow(clippy::too_many_arguments)]
+/// What the build makes of my file for one sound (edit, then loudness
+/// matched to the original), as WAV bytes, for listening in the app.
+pub fn render_preview(original_vsnd: &[u8], source: &Path, volume_db: f64, edit: Option<&audio::AudioEdit>, looped: bool) -> Result<Vec<u8>> {
+    let original = audio::measure(&audio::decode_vsnd(original_vsnd)?);
+    let mut pcm = audio::decode_file(source).map_err(|e| Error::msg(format!("{}: {e}", source.display())))?;
+    pcm = audio::to_channels(&pcm, original.channels);
+    if let Some(e) = edit.filter(|e| !e.is_empty()) {
+        pcm = audio::apply_edit(&pcm, e);
+    }
+    let v = volume_db.clamp(audio::MIN_OFFSET_DB, audio::MAX_BOOST_DB);
+    let (processed, _, _, _) = audio::match_loudness(&pcm, &original, v);
+    let tmp = std::env::temp_dir().join(format!("dms_preview_{}.wav", std::process::id()));
+    audio::write_wav(&tmp, &processed, 0.0, looped)?;
+    let bytes = std::fs::read(&tmp).at(&tmp)?;
+    let _ = std::fs::remove_file(&tmp);
+    Ok(bytes)
+}
+
 pub fn build_sound_mod(
     csdk: &Path,
     game_dir: &Path,
@@ -196,6 +217,9 @@ pub fn build_sound_mod(
             .map_err(|e| Error::msg(format!("{}: {e}", src.display())))?;
         let converted_channels = pcm.channels != original.channels;
         pcm = audio::to_channels(&pcm, original.channels);
+        if let Some(e) = job.edit.as_ref().filter(|e| !e.is_empty()) {
+            pcm = audio::apply_edit(&pcm, e);
+        }
         let yours = audio::measure(&pcm);
         let volume_db = job.volume_db.clamp(audio::MIN_OFFSET_DB, audio::MAX_BOOST_DB);
         let (processed, gain_db, limited, result) = audio::match_loudness(&pcm, &original, volume_db);
@@ -320,8 +344,8 @@ mod tests {
         audio::write_wav(&mine_hit, &tone(44100, 2, 0.3, 0.1), 0.0, false).unwrap();
 
         let jobs = vec![
-            SoundJob { target: "sounds/abilities/gigawatt/gigawatt_storm_cloud_lp.vsnd_c".into(), source: mine_lp.display().to_string(), volume_db: 0.0 },
-            SoundJob { target: "sounds/abilities/gigawatt/a4_storm_cloud/impact_1.vsnd_c".into(), source: mine_hit.display().to_string(), volume_db: 2.0 },
+            SoundJob { target: "sounds/abilities/gigawatt/gigawatt_storm_cloud_lp.vsnd_c".into(), source: mine_lp.display().to_string(), volume_db: 0.0, edit: None },
+            SoundJob { target: "sounds/abilities/gigawatt/a4_storm_cloud/impact_1.vsnd_c".into(), source: mine_hit.display().to_string(), volume_db: 2.0, edit: None },
         ];
         let mutes = vec!["sounds/vo/gigawatt/gigawatt_use_power4_01.vsnd_c".to_string()];
         let out = t.path().join("out/mod.vpk");
@@ -359,7 +383,7 @@ mod tests {
         assert!(target_stem("sounds/../x.vsnd_c").is_err());
         assert!(target_stem("sounds/a/b.vsnd_c").is_ok());
         let t = tempfile::tempdir().unwrap();
-        let jobs = vec![SoundJob { target: "sounds/a.vsnd_c".into(), source: "x".into(), volume_db: 0.0 }];
+        let jobs = vec![SoundJob { target: "sounds/a.vsnd_c".into(), source: "x".into(), volume_db: 0.0, edit: None }];
         let e = build_sound_mod(t.path(), t.path(), "x", &jobs, &[], &t.path().join("o.vpk"), &fake_runner, &|_| {});
         assert!(e.unwrap_err().to_string().contains("CSDK wasn't found"));
     }

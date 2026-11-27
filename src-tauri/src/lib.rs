@@ -582,6 +582,42 @@ fn set_project_item(app: State<App>, id: String, target: String, source: String)
     app.lib.lock().unwrap().set_project_item(&id, &target, &source).map_err(err)
 }
 
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct Waveform {
+    duration: f64,
+    rate: u32,
+    channels: u16,
+    peaks: Vec<[f32; 2]>,
+}
+
+/// Waveform overview of one of my files, for the audio editor.
+#[tauri::command]
+async fn audio_peaks(path: String, buckets: usize) -> CmdResult<Waveform> {
+    let p = PathBuf::from(&path);
+    let pcm = tauri::async_runtime::spawn_blocking(move || audio::decode_file(&p)).await.map_err(|e| e.to_string())?.map_err(err)?;
+    Ok(Waveform { duration: pcm.duration_secs(), rate: pcm.rate, channels: pcm.channels, peaks: audio::peaks(&pcm, buckets.clamp(100, 40000)) })
+}
+
+/// What the build will make of my file for one sound, with these edits
+/// (WAV bytes): exactly what plays in game.
+#[tauri::command]
+async fn render_sound_preview(app: State<'_, App>, target: String, source: String, volume_db: f64, edit: Option<audio::AudioEdit>) -> CmdResult<tauri::ipc::Response> {
+    let original = game_sound_bytes(&app, &target)?;
+    let looped = csdk::is_loop(&target);
+    let src = PathBuf::from(&source);
+    let bytes = tauri::async_runtime::spawn_blocking(move || csdk::render_preview(&original, &src, volume_db, edit.as_ref(), looped))
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(err)?;
+    Ok(tauri::ipc::Response::new(bytes))
+}
+
+#[tauri::command]
+fn set_item_edit(app: State<App>, id: String, target: String, edit: Option<audio::AudioEdit>) -> CmdResult<()> {
+    app.lib.lock().unwrap().set_item_edit(&id, &target, edit).map_err(err)
+}
+
 #[tauri::command]
 fn set_item_volume(app: State<App>, id: String, target: String, volume_db: f64) -> CmdResult<()> {
     app.lib.lock().unwrap().set_item_volume(&id, &target, volume_db).map_err(err)
@@ -1207,6 +1243,9 @@ pub fn run() {
             remove_project_item,
             build_sound_project,
             set_item_volume,
+            set_item_edit,
+            audio_peaks,
+            render_sound_preview,
             set_voice_mute,
             sound_heroes,
             describe_sounds,

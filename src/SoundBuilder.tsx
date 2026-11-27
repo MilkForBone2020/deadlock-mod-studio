@@ -1,3 +1,4 @@
+import { AudioEditor } from "./AudioEditor";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { listen } from "@tauri-apps/api/event";
@@ -500,6 +501,7 @@ function ItemRow({
   const orig = useLevel("game", target);
   const mine = useLevel("file", source || null);
   const [vol, setVol] = useState(item.volumeDb ?? 0);
+  const [editing, setEditing] = useState(false);
   useEffect(() => setVol(item.volumeDb ?? 0), [item.volumeDb]);
   const commit = () => {
     if (Math.abs(vol - (item.volumeDb ?? 0)) > 0.01) void act(() => api.setItemVolume(projectId, target, vol));
@@ -509,6 +511,7 @@ function ItemRow({
 
   return (
     <li className="item">
+      {editing && <AudioEditor projectId={projectId} item={item} original={orig.level} onClose={() => setEditing(false)} act={act} />}
       <div className="item-top">
         <div className="item-side">
           <div className="item-title">
@@ -527,6 +530,8 @@ function ItemRow({
                 <PlayBtn active={player.playing === `file:${source}`} onClick={() => void player.play("file", source)} label="Play your file" />
                 <span className="item-name" title={source}>{fileName(source)}</span>
                 <button className="link small" onClick={choose}>Change</button>
+                <button className="link small" onClick={() => setEditing(true)}>Edit</button>
+                {item.edit && <span className="tag edited">edited</span>}
               </div>
               <LevelText {...mine} />
             </>

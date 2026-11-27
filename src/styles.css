@@ -549,3 +549,20 @@ details summary { cursor: pointer; color: var(--muted); font-size: 13px; }
 .phys-sliders input { width: 100%; padding: 0; border: 0; background: transparent; accent-color: var(--gold); }
 .phys-foot { display: flex; justify-content: space-between; gap: 12px; }
 .mono { font-family: var(--mono); font-size: 12px; }
+
+/* Audio editor */
+.modal.wide { width: min(1180px, calc(100vw - 48px)); }
+.ae-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.ae-bar .btn.on { background: var(--gold); color: var(--gold-ink); }
+.ae-sep { width: 1px; height: 22px; background: var(--line); margin: 0 4px; }
+.ae-wave { overflow-x: auto; overflow-y: hidden; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); min-height: 202px; }
+.ae-wave canvas { display: block; cursor: text; }
+.ae-wave canvas.vol { cursor: crosshair; }
+.ae-loading { height: 200px; display: grid; place-items: center; color: var(--muted); }
+.ae-zoom { display: flex; align-items: center; gap: 6px; margin-left: auto; color: var(--muted); font-size: 12.5px; }
+.ae-num { display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: 12.5px; }
+.ae-num input { width: 64px; }
+.seg { display: inline-flex; border: 1px solid var(--line-2); border-radius: 8px; overflow: hidden; }
+.seg button { background: transparent; color: var(--muted); border: 0; padding: 5px 10px; font: inherit; font-size: 12.5px; cursor: pointer; }
+.seg button.on { background: var(--gold-dim); color: var(--gold-2); }
+.tag.edited { color: var(--teal); }

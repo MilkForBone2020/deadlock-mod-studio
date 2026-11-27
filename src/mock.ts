@@ -350,6 +350,18 @@ export const mockApi: Api = {
     rate: 44100,
   }),
   audioBytes: async () => new ArrayBuffer(0),
+  audioPeaks: async (_path: string, buckets: number) => ({
+    duration: 42.5,
+    rate: 44100,
+    channels: 2,
+    peaks: Array.from({ length: buckets }, (_, i) => {
+      const t = i / buckets;
+      const env = 0.25 + 0.6 * Math.abs(Math.sin(t * 9)) * (0.6 + 0.4 * Math.sin(i * 0.37));
+      return [-env, env] as [number, number];
+    }),
+  }),
+  renderSoundPreview: async () => new ArrayBuffer(0),
+  setItemEdit: async () => undefined,
   detectCsdk: async () => "D:\\Desktop\\Reduced_CSDK_13",
   setCsdkDir: ok,
   createSoundProject: async (name, hero) => {

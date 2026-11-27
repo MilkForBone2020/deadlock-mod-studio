@@ -122,6 +122,24 @@ export interface SoundJob {
   target: string;
   source: string;
   volumeDb: number;
+  /** Edits from the audio editor (times in seconds of my file). */
+  edit?: AudioEdit | null;
+}
+
+export interface AudioEdit {
+  start: number;
+  end: number | null;
+  cuts: [number, number][];
+  volume: [number, number][];
+  fadeIn: number;
+  fadeOut: number;
+}
+
+export interface Waveform {
+  duration: number;
+  rate: number;
+  channels: number;
+  peaks: [number, number][];
 }
 
 export interface VoiceMute {
